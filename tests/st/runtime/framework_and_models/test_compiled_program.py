@@ -141,6 +141,7 @@ class TestJitCompiledProgram:
 
 def _manual_dispatch(compiled, *args, device_id, config=None, call_config=None):
     """Drive a hand-built simpler.Worker via the extraction surface; return coerced list."""
+    from pypto.runtime import to_worker_task_args  # noqa: PLC0415
     from simpler.worker import Worker as SimplerWorker  # noqa: PLC0415 — lazy: skip on host-only CI
 
     cc = compiled.chip_callable
@@ -154,7 +155,7 @@ def _manual_dispatch(compiled, *args, device_id, config=None, call_config=None):
     w.init()
     try:
         cid = w.register(cc)
-        w.run(cid, orch_args, cfg)
+        w.run(cid, to_worker_task_args(w, orch_args), cfg)
         w.unregister(cid)
     finally:
         w.close()

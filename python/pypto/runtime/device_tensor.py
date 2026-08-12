@@ -13,8 +13,9 @@ A :class:`DeviceTensor` is an opaque ``(data_ptr, shape, dtype)`` triple bound
 to a specific :class:`~pypto.runtime.Worker`'s address space.  Pass it to
 :class:`~pypto.ir.compiled_program.CompiledProgram` in place of a
 ``torch.Tensor`` to skip the host→device copy on entry and the device→host
-copy on exit — the runtime treats the underlying buffer as already resident
-on the worker (``Tensor.child_memory == 1``).
+copy on exit. Direct L2 execution wraps it as a ``ChipTensor`` with
+``child_memory=True``; L3 execution resolves it to the canonical runtime
+``Buffer`` owned by the prepared worker.
 
 Lifetime is **caller-managed**: every :meth:`~pypto.runtime.Worker.malloc`
 (or :meth:`~pypto.runtime.Worker.alloc_tensor`) must be paired with a
@@ -89,8 +90,9 @@ class StackedDeviceTensor:
     parameter that the orchestrator slices along its leading dimension and
     dispatches per rank (``for r in range(world_size): child(x[r], device=...)``).
     Indexing ``obj[i, ...]`` returns shard ``i``'s :class:`DeviceTensor`, so the
-    generated ``host_orch`` wraps it as ``child_memory=True`` and the runtime
-    skips the per-dispatch H2D upload — the shards are uploaded once (e.g. via
+    generated ``host_orch`` resolves it to the prepared worker's canonical
+    runtime ``Buffer``, so the runtime skips the per-dispatch H2D upload — the
+    shards are uploaded once (e.g. via
     :meth:`~pypto.runtime.distributed_runner.DistributedWorker.alloc_stacked_tensor`)
     and reused across dispatches.
 

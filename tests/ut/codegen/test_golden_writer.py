@@ -275,7 +275,7 @@ class TestCallableInitValue:
         assert "def _make_arange_tensor" in preambles["_make_arange_tensor"]
 
     def test_large_tensor_literal_raises(self):
-        """Tensor init_value with >100 elements raises ValueError."""
+        """ChipTensor init_value with >100 elements raises ValueError."""
         large_tensor = torch.arange(0, 200, dtype=torch.float32)
         specs = [
             TensorSpec("a", [200], torch.float32, init_value=large_tensor),

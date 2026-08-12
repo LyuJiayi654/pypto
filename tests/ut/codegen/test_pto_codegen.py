@@ -1324,17 +1324,17 @@ class TestGenerateArgUnpacking:
     def test_tensor_only(self):
         func = _make_func("test_fn", [("a", "tensor"), ("b", "tensor"), ("out", "tensor")])
         code, names = _generate_arg_unpacking(func)
-        assert "reinterpret_cast<__gm__ Tensor*>(args[0])" in code
-        assert "reinterpret_cast<__gm__ Tensor*>(args[1])" in code
-        assert "reinterpret_cast<__gm__ Tensor*>(args[2])" in code
+        assert "reinterpret_cast<__gm__ ChipTensor*>(args[0])" in code
+        assert "reinterpret_cast<__gm__ ChipTensor*>(args[1])" in code
+        assert "reinterpret_cast<__gm__ ChipTensor*>(args[2])" in code
         assert names == ["a", "b", "out"]
 
     def test_mixed_tensor_scalar(self):
         func = _make_func("test_fn", [("input", "tensor"), ("scale", "scalar"), ("output", "tensor")])
         code, names = _generate_arg_unpacking(func)
         # Tensors-first: input=args[0], output=args[1], scale=args[2]
-        assert "reinterpret_cast<__gm__ Tensor*>(args[0])" in code
-        assert "reinterpret_cast<__gm__ Tensor*>(args[1])" in code
+        assert "reinterpret_cast<__gm__ ChipTensor*>(args[0])" in code
+        assert "reinterpret_cast<__gm__ ChipTensor*>(args[1])" in code
         assert "scale_conv.u64 = args[2];" in code
         assert "float scale = scale_conv.val;" in code
         assert names == ["input", "output", "scale"]
@@ -1646,18 +1646,22 @@ class TestGenerateKernelWrapper:
         assert func is not None
         assert transformed.get_function("split_vec__aiv1") is None
 
+        mlir = _generate_mlir(transformed)
+        assert "aiv_subblockid(" in mlir
+
         wrapper = _generate_kernel_wrapper(func, SAMPLE_PTOAS_OUTPUT)
         assert "PYPTO_FIXED_SUBBLOCK_ID" not in wrapper
-        assert wrapper.count("#if !defined(__CPU_SIM)") == 2
-        assert '#if !defined(__CPU_SIM)\n#include "intrinsic.h"' in wrapper
+        assert "static thread_local uint32_t pypto_runtime_subblock_id;" in wrapper
+        assert "pto::cpu_sim::injected_subblock_id_hook = &pypto_runtime_get_subblock_id;" in wrapper
+        assert "PTO_INTERNAL void TPUSH_IMPL(Pipe& pipe, TileProd& tile, int32_t subblock_id)" in wrapper
+        assert "Stride<1, 1, 1, cols * 2, 1>" in wrapper
+        assert "PTO_INTERNAL void TPOP_IMPL(Pipe& pipe, TileCons& tile, int32_t subblock_id)" in wrapper
         assert "[[block_local]] static int32_t pypto_runtime_subblock_id;" in wrapper
         assert '#include "intrinsic.h"' in wrapper
         assert "#define get_subblockid() pypto_runtime_subblock_id" in wrapper
         assert (
-            "#if !defined(__CPU_SIM)\n"
             "    // Read A2A3 mixed-task subblock id from runtime dispatch context\n"
-            "    pypto_runtime_subblock_id = get_sub_block_id(args);\n"
-            "#endif"
+            "    pypto_runtime_subblock_id = get_sub_block_id(args);"
         ) in wrapper
 
     def test_no_split_dual_dispatch_wrapper_uses_runtime_subblock_bridge_on_a2a3(self):
@@ -1743,7 +1747,10 @@ class TestGenerateKernelWrapper:
         )
         assert "static __aicore__ void test_func" in split_cube_wrapper
         assert "static __aicore__ void test_func" in split_vec_wrapper
-        assert '#if !defined(__CPU_SIM)\n#include "intrinsic.h"' in split_vec_wrapper
+        assert "static thread_local uint32_t pypto_runtime_subblock_id;" in split_vec_wrapper
+        assert (
+            "pto::cpu_sim::injected_subblock_id_hook = &pypto_runtime_get_subblock_id;" in split_vec_wrapper
+        )
         assert "[[block_local]] static int32_t pypto_runtime_subblock_id;" in split_vec_wrapper
         assert "#define get_subblockid() pypto_runtime_subblock_id" in split_vec_wrapper
         assert "pypto_runtime_subblock_id = get_sub_block_id(args);" in split_vec_wrapper

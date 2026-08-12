@@ -39,8 +39,10 @@ def device_runner(monkeypatch):
         ChipCallable=object,
         ChipStorageTaskArgs=object,
         CoreCallable=object,
+        TaskArgs=object,
         Worker=object,
-        make_tensor_arg=object,
+        get_element_size=object,
+        make_chip_tensor_arg=object,
         scalar_to_uint64=object,
     )
     monkeypatch.setitem(sys.modules, "pypto.runtime.kernel_compiler", fake_kernel_compiler)

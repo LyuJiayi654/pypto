@@ -133,7 +133,7 @@ runtime 以 `[STRACE]` 日志标记的形式输出每次运行的 host/device �
 PR #1177，在 `SIMPLER_DFX` 下默认开启）；用 simpler 的 `strace_timing` /
 `device_log_timing` 工具解析这些标记，而不是读取返回值。需要 per-task 的 device
 计时时，开启 L2 swimlane DFX（`RunConfig(enable_l2_swimlane=True)`）并读取
-`l2_swimlane_records.json`。
+`chip_swimlane_records.json`。
 
 ### 性能基准（`benchmark`）
 
@@ -291,17 +291,25 @@ class HelloAllReduce:
 指南包含**逐行解读、ring allreduce 权衡、notify/wait 握手模式以及调试表格**。
 完整章节见 [distributed/index.md](distributed/index.md)。
 
-`ir.compile` 对 L3+ 分布式程序返回的 `DistributedCompiledProgram` 与 `CompiledProgram`
-一样接受 `DeviceTensor` 入参：用 worker 常驻 buffer 替代 `torch.Tensor`，runtime 即对该
-参数跳过 H2D/D2H。这是在 generate 循环的多次 dispatch 之间保持大块静态权重常驻的推荐做法。
+`ir.compile` 对 L3+ 分布式程序返回 `DistributedCompiledProgram`；它通过
+`compiled.prepare()` 返回的 `DistributedWorker` 接受 `DeviceTensor` 入参。该 worker
+持有每个设备分配背后的 runtime `Buffer` 身份，因此 `DeviceTensor` 不能传给 one-shot
+的 `compiled(*args)` 路径。prepared dispatch 会对常驻参数跳过 H2D/D2H；这是在
+generate 循环的多次 dispatch 之间保持大块静态权重常驻的推荐做法。
 
 ```python
 import torch
-from pypto.runtime import DeviceTensor
 
 compiled = ir.compile(MyDistributedProgram)   # 返回 DistributedCompiledProgram
-weight = DeviceTensor(dev_ptr, (1024, 4096), torch.float16)   # 调用方自管 buffer
-compiled(x, weight, out)                       # weight：无 H2D/D2H 拷贝
+host_x = torch.zeros((seq, 4096), dtype=torch.float16).share_memory_()
+host_out = torch.zeros((seq, 4096), dtype=torch.float16).share_memory_()
+host_weight = load_weight().contiguous()
+
+with compiled.prepare() as rt:
+    weight = rt.alloc_tensor(host_weight.shape, host_weight.dtype)
+    rt.copy_to(weight.data_ptr, host_weight.data_ptr(), host_weight.nbytes)
+    rt(host_x, weight, host_out)                 # weight：每次 dispatch 不再 H2D/D2H
+    rt.free_tensor(weight)
 ```
 
 #### 跨多次 dispatch 复用 setup（`prepare()`）
@@ -363,8 +371,8 @@ with DistributedWorker(compiled, inherited_host_tensors=[host_w]) as rt:
 ```
 
 内部每个分片 `host_w[i]` 都成为一个 worker 常驻的 `DeviceTensor`,因此生成代码里的
-`x[r]` 取下标会跳过 H2D 上传(`child_memory`)。分片在 `close()` 时自动释放,也可提前用
-`free_stacked_tensor` 释放。
+`x[r]` 取下标会解析 prepared worker 持有的 runtime buffer 并跳过 H2D 上传。分片在
+`close()` 时自动释放,也可提前用 `free_stacked_tensor` 释放。
 
 和单个 `DeviceTensor` 一样,`StackedDeviceTensor` 也不会被自动拷回。若要一次把每个分片
 当前的设备内容读回主机——例如某一步结束时读回常驻的 KV cache——可用

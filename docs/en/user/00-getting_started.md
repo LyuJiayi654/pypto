@@ -151,7 +151,7 @@ a per-launch timing object. The runtime emits per-run host/device timing as
 `SIMPLER_DFX`); parse them with simpler's `strace_timing` /
 `device_log_timing` tools rather than reading a return value. For per-task
 device timing, enable the L2 swimlane DFX (`RunConfig(enable_l2_swimlane=True)`)
-and read `l2_swimlane_records.json`.
+and read `chip_swimlane_records.json`.
 
 ### Benchmarking (`benchmark`)
 
@@ -332,18 +332,25 @@ notify/wait handshake patterns, and a debugging table**. The full chapter is
 at [distributed/index.md](distributed/index.md).
 
 L3+ distributed programs returned by `ir.compile` (a `DistributedCompiledProgram`)
-accept `DeviceTensor` arguments the same way as `CompiledProgram`: pass a
-worker-resident buffer in place of a `torch.Tensor` and the runtime skips H2D/D2H
-for that argument. This is the recommended way to keep large static weights
-resident across the many dispatches of a generate loop.
+accept `DeviceTensor` arguments through the `DistributedWorker` returned by
+`compiled.prepare()`. The worker owns the runtime `Buffer` identity behind each
+device allocation, so a `DeviceTensor` cannot be passed to the one-shot
+`compiled(*args)` path. Prepared dispatch skips H2D/D2H for resident arguments;
+this is the recommended way to keep large static weights across a generate loop.
 
 ```python
 import torch
-from pypto.runtime import DeviceTensor
 
 compiled = ir.compile(MyDistributedProgram)   # returns DistributedCompiledProgram
-weight = DeviceTensor(dev_ptr, (1024, 4096), torch.float16)   # caller-managed buffer
-compiled(x, weight, out)                       # weight: no H2D/D2H copy
+host_x = torch.zeros((seq, 4096), dtype=torch.float16).share_memory_()
+host_out = torch.zeros((seq, 4096), dtype=torch.float16).share_memory_()
+host_weight = load_weight().contiguous()
+
+with compiled.prepare() as rt:
+    weight = rt.alloc_tensor(host_weight.shape, host_weight.dtype)
+    rt.copy_to(weight.data_ptr, host_weight.data_ptr(), host_weight.nbytes)
+    rt(host_x, weight, host_out)                 # weight: no per-dispatch H2D/D2H
+    rt.free_tensor(weight)
 ```
 
 #### Reusing setup across dispatches (`prepare()`)
@@ -410,8 +417,9 @@ with DistributedWorker(compiled, inherited_host_tensors=[host_w]) as rt:
 ```
 
 Internally each shard `host_w[i]` becomes a worker-resident `DeviceTensor`, so the
-generated `x[r]` indexing skips the H2D upload (`child_memory`). Shards are
-auto-freed on `close()` if not released earlier via `free_stacked_tensor`.
+generated `x[r]` indexing resolves the prepared worker's runtime buffer and
+skips the H2D upload. Shards are auto-freed on `close()` if not released earlier
+via `free_stacked_tensor`.
 
 Like a single `DeviceTensor`, a `StackedDeviceTensor` is never copied back
 automatically. To read the current device contents of every shard back to the

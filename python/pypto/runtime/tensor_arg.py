@@ -17,12 +17,29 @@ This pypto-owned wrapper widens that conversion to also accept worker-resident
 pre-uploaded device buffers — mirroring the L2 path in
 :func:`pypto.runtime.runner.execute_compiled`.
 
-Host ``torch.Tensor`` arguments are delegated unchanged to simpler's
-``make_tensor_arg``; only the device-resident branches are added here.
+Host ``torch.Tensor`` arguments are named through the active simpler Worker;
+device-resident arguments are resolved to runtime-owned ``Buffer`` views.
 """
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import cache
 from typing import Any
+
+_ACTIVE_WORKER: ContextVar[Any | None] = ContextVar("_pypto_tensor_arg_worker", default=None)
+_DEVICE_RESOLVER: ContextVar[Any | None] = ContextVar("_pypto_device_tensor_resolver", default=None)
+
+
+@contextmanager
+def bind_tensor_arg_context(worker: Any, device_resolver: Any = None):
+    """Bind the Simpler Worker that owns generated orchestration arguments."""
+    worker_token = _ACTIVE_WORKER.set(worker)
+    resolver_token = _DEVICE_RESOLVER.set(device_resolver)
+    try:
+        yield
+    finally:
+        _DEVICE_RESOLVER.reset(resolver_token)
+        _ACTIVE_WORKER.reset(worker_token)
 
 
 @cache
@@ -37,7 +54,7 @@ def _modules() -> tuple[Any, Any]:
     overhead on the host dispatch loop.
 
     Only the *module objects* are cached; the individual symbols (``Tensor``,
-    ``DeviceTensor``, ``device_tensor_to_tensor``, ``make_tensor_arg``) are
+    ``DeviceTensor``, ``make_tensor_arg``) are
     resolved via attribute access on every call. Caching the module rather than
     the bound symbols keeps ``make_tensor_arg`` responsive to test monkeypatches
     of ``task_interface.make_tensor_arg`` (see ``tests/ut/runtime``), while still
@@ -56,11 +73,11 @@ def make_tensor_arg(arg: Any) -> Any:
 
     Args:
         arg: One of:
-            - ``torch.Tensor``: a CPU-contiguous host tensor (delegated to
-              simpler's ``make_tensor_arg``, which performs the H2D copy).
+            - ``torch.Tensor``: a CPU-contiguous, pre-fork host tensor named
+              through the active simpler Worker.
             - :class:`~pypto.runtime.DeviceTensor`: a worker-resident buffer;
-              wrapped as ``Tensor(child_memory=True)`` so the runtime
-              skips H2D/D2H (memory is caller-managed).
+              resolved to its runtime-owned ``Buffer`` and self-describing
+              ``Tensor`` view.
             - simpler ``Tensor``: returned as-is (already device-side).
 
     Returns:
@@ -71,5 +88,11 @@ def make_tensor_arg(arg: Any) -> Any:
     if isinstance(arg, task_interface.Tensor):
         return arg
     if isinstance(arg, device_tensor.DeviceTensor):
-        return task_interface.device_tensor_to_tensor(arg)
-    return task_interface.make_tensor_arg(arg)
+        resolver = _DEVICE_RESOLVER.get()
+        if resolver is None:
+            raise RuntimeError("DeviceTensor arguments require a prepared DistributedWorker")
+        return resolver(arg)
+    worker = _ACTIVE_WORKER.get()
+    if worker is None:
+        raise RuntimeError("host tensor argument conversion requires an active distributed Worker")
+    return task_interface.make_tensor_arg(worker, arg)

@@ -33,7 +33,7 @@ from .log_config import current_level as log_level
 from .runner import RunConfig, RunResult, compile_program, execute_compiled, run
 from .runtime_base import Worker
 from .tensor_spec import ScalarSpec, TensorSpec
-from .worker import ChipWorker, RegistrationHandle
+from .worker import ChipWorker, RegistrationHandle, to_worker_task_args
 
 # Honour ``PYPTO_RUNTIME_LOG`` before any runtime entry point runs.
 _ensure_log_configured()
@@ -60,5 +60,6 @@ __all__ = [
     "RunResult",
     "ScalarSpec",
     "TensorSpec",
+    "to_worker_task_args",
     "Worker",
 ]

@@ -257,48 +257,6 @@ _KERNEL_HEADER = """\
 #include "tensor.h"
 {spmd_override}
 
-#if defined(__CPU_SIM)
-// PTOAS v0.50+ emits cache_line_t::ENTIRE_DATA_CACHE / SINGLE_CACHE_LINE as
-// scoped identifiers, but the pto-isa cpu_stub.hpp defines them as bare macros
-// (#define ENTIRE_DATA_CACHE 0) — which breaks cache_line_t::ENTIRE_DATA_CACHE
-// into cache_line_t::0. Undefine the macros and provide proper namespace-scoped
-// constexpr constants. The same headers also #define dcci/dsb as macros that
-// would expand our own inlines, so undefine + redefine all of them here.
-#include <atomic>
-
-// Forward-declare the overloads so the undefs below don't break chained includes.
-namespace pypto_sim_detail {{
-    template <typename... Args>
-    static inline void sim_dcci(Args...);  // defined after the undefs
-    static inline void sim_dsb(int kind);  // ditto
-}}
-
-// Undefine conflicting macros from pto-isa cpu_stub.hpp / inner_kernel.h
-// so our namespace-scoped constants and inline functions are used instead.
-#undef ENTIRE_DATA_CACHE
-#undef SINGLE_CACHE_LINE
-#undef DSB_DDR
-#undef dcci
-#undef dsb
-#undef CACHELINE_OUT
-
-namespace cache_line_t {{
-    constexpr int ENTIRE_DATA_CACHE = 0;
-    constexpr int SINGLE_CACHE_LINE = 0;
-    constexpr int CACHELINE_OUT     = 0;
-}}
-typedef int mem_dsb_t;
-#define DSB_DDR 0
-
-static inline void dcci(...) {{
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-}}
-static inline void dsb(mem_dsb_t) {{
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-}}
-#endif  // __CPU_SIM
-
-
 using namespace pto;
 
 """
@@ -497,7 +455,9 @@ def _generate_arg_unpacking(func: _ir_core.Function, *, uses_spmd: bool = False)
         assert isinstance(param.type, _ir_core.TensorType)
         c_type = param.type.dtype.to_c_type_string()
         lines.append(f"    // Unpack tensor: {param_name}")
-        lines.append(f"    __gm__ Tensor* {param_name}_tensor = reinterpret_cast<__gm__ Tensor*>(args[{i}]);")
+        lines.append(
+            f"    __gm__ ChipTensor* {param_name}_tensor = reinterpret_cast<__gm__ ChipTensor*>(args[{i}]);"
+        )
         if param_name == "__gm_pipe_buffer" and uses_spmd:
             lines.append("    // SPMD: shard GM pipe workspace by logical block_idx to avoid overlap.")
             lines.append("    int64_t __pypto_gm_block_num = static_cast<int64_t>(__pypto_spmd_block_num);")
@@ -710,6 +670,73 @@ def _generate_kernel_header(
         uses_sdma = _uses_sdma_workspace(func)
     needs_intrinsic = uses_spmd or uses_subblock or uses_sdma
     spmd_override = '#include "intrinsic.h"\n' if needs_intrinsic else ""
+    if _needs_runtime_subblock_bridge(func):
+        spmd_override += textwrap.dedent(
+            """\
+            #if defined(__CPU_SIM)
+            // PTO-ISA's CPU implementation resolves get_subblockid() through
+            // this injected hook. Source it from the same runtime payload used
+            // by tile.get_subblock_idx instead of simulator physical-core TLS.
+            static thread_local uint32_t pypto_runtime_subblock_id;
+            static uint32_t pypto_runtime_get_subblock_id()
+            {
+                return pypto_runtime_subblock_id;
+            }
+
+            namespace pto {
+
+            // The runtime-pinned PTO-ISA exposes explicit-lane TPUSH/TPOP on
+            // hardware but not in its CPU implementation. Supply the missing
+            // adapters so simulator builds exercise the same frontend form.
+            // Its generic V2C GM left-right path also packs each lane as a
+            // contiguous tile; preserve the required interleaved row stride.
+            template <typename Pipe, typename TileProd, TileSplitAxis Split>
+            PTO_INTERNAL void TPUSH_IMPL(Pipe& pipe, TileProd& tile, int32_t subblock_id)
+            {
+                pypto_runtime_subblock_id = static_cast<uint32_t>(subblock_id);
+                if constexpr (Split == TileSplitAxis::TILE_LEFT_RIGHT && Pipe::is_v2c &&
+                              TileProd::Loc == TileType::Vec) {
+                    if (pipe.fifo.GM_SLOT_BUFFER != nullptr) {
+                        using T = typename TileProd::DType;
+                        constexpr int rows = TileProd::Rows;
+                        constexpr int cols = TileProd::Cols;
+                        if (pipe.prod.getAllocateStatus()) {
+                            pipe.prod.template allocate<TileProd, Split>();
+                        }
+                        const std::size_t slot_index =
+                            static_cast<std::size_t>(pipe.prod.getTileId() % Pipe::RingFiFo::SLOT_NUM);
+                        const std::size_t entry_base =
+                            slot_index * Pipe::RingFiFo::SLOT_SIZE +
+                            static_cast<std::size_t>(pipe.prod.entryOffset);
+                        const std::size_t sub_offset =
+                            static_cast<std::size_t>(subblock_id) * cols * sizeof(T);
+                        using GlobalData = GlobalTensor<
+                            T, Shape<1, 1, 1, rows, cols>, Stride<1, 1, 1, cols * 2, 1>>;
+                        auto* addr = reinterpret_cast<__gm__ T*>(
+                            reinterpret_cast<std::uintptr_t>(pipe.fifo.GM_SLOT_BUFFER) +
+                            entry_base + sub_offset);
+                        GlobalData global_data(addr);
+                        TSTORE(global_data, tile);
+                        if (pipe.prod.getRecordStatus()) {
+                            pipe.prod.template record<TileProd, Split>();
+                        }
+                        return;
+                    }
+                }
+                TPUSH_IMPL<Pipe, TileProd, Split>(pipe, tile);
+            }
+
+            template <typename Pipe, typename TileCons, TileSplitAxis Split>
+            PTO_INTERNAL void TPOP_IMPL(Pipe& pipe, TileCons& tile, int32_t subblock_id)
+            {
+                pypto_runtime_subblock_id = static_cast<uint32_t>(subblock_id);
+                TPOP_IMPL<Pipe, TileCons, Split>(pipe, tile);
+            }
+
+            }  // namespace pto
+            #endif
+            """
+        )
 
     return _KERNEL_HEADER.format(
         func_name=func.name,
@@ -746,7 +773,14 @@ def _generate_kernel_wrapper(
     runtime_subblock_setup = ""
     if _needs_runtime_subblock_bridge(func):
         runtime_subblock_setup = (
-            "#if !defined(__CPU_SIM)\n"
+            "#if defined(__CPU_SIM)\n"
+            "    pypto_runtime_subblock_id = static_cast<uint32_t>(get_sub_block_id(args));\n"
+            "    static const bool pypto_runtime_subblock_hook_installed = []() {\n"
+            "        pto::cpu_sim::injected_subblock_id_hook = &pypto_runtime_get_subblock_id;\n"
+            "        return true;\n"
+            "    }();\n"
+            "    (void)pypto_runtime_subblock_hook_installed;\n"
+            "#else\n"
             "    // Read A2A3 mixed-task subblock id from runtime dispatch context\n"
             "    pypto_runtime_subblock_id = get_sub_block_id(args);\n"
             "#endif\n\n"
@@ -1514,9 +1548,7 @@ def _emit_sub_worker_module(func: _ir_core.Function) -> str:
 
     indented_body = textwrap.indent(body.body, "    ") if body.body else "    pass"
     unpack_block = (
-        "\n".join(
-            f"    {name} = _tensor_from_continuous(args.tensor({i}))" for i, name in enumerate(param_names)
-        )
+        "\n".join(f"    {name} = _tensor_from_continuous(args[{i}])" for i, name in enumerate(param_names))
         or "    pass"
     )
 

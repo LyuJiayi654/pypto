@@ -762,8 +762,9 @@ class CompiledProgram(_RuntimeFacade):
 
         Returns ``(orch_args, coerced, return_style)``:
 
-        - ``orch_args``: simpler dispatch arg pack. Hand to
-          ``Worker.run(cid, orch_args, cfg)``.
+        - ``orch_args``: compact chip-side dispatch arg pack. Before handing it
+          to ``simpler.Worker.run``, convert it with
+          :func:`pypto.runtime.to_worker_task_args`.
         - ``coerced``: full positional list of length ``len(param_infos)``.
           Scalar values are wrapped in their target ``ctypes`` type. For
           return-style callers, output ``torch.Tensor``s are auto-allocated

@@ -419,7 +419,9 @@ class DistributedCompiledProgram:
         Non-shared host tensors are rejected (the forked chip worker cannot see
         a buffer allocated after the fork). The convenience host-to-device
         upload of arbitrary host ``torch.Tensor`` inputs is only available on
-        the one-shot ``compile(...)(*args)`` / ``execute_distributed`` path.
+        the one-shot ``compile(...)(*args)`` / ``execute_distributed`` path;
+        conversely, device-resident inputs require the prepared worker that
+        owns their runtime ``Buffer`` identity.
 
         Args:
             config: Optional :class:`~pypto.runtime.RunConfig` used **only** to

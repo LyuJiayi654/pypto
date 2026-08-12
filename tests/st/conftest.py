@@ -227,7 +227,7 @@ def pytest_addoption(parser):
         "--enable-l2-swimlane",
         action="store_true",
         default=False,
-        help="Capture per-task L2 perf records into <work_dir>/dfx_outputs/l2_swimlane_records.json. "
+        help="Capture per-task L2 perf records into <work_dir>/dfx_outputs/chip_swimlane_records.json. "
         "On onboard platforms, also render merged_swimlane_*.json and run the kernel twice: a dep_gen "
         "pass to capture deps.json (the converter's task graph) then a clean swimlane pass, since "
         "dep_gen collection perturbs the timing. Simulator platforms emit only the records (the merged "

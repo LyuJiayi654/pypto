@@ -29,6 +29,10 @@ def fake_simpler_worker():
         patch("pypto.runtime.worker._SimplerWorker") as cls,
         # init() builds a prewarm CallConfig; patch the cache so no simpler import happens.
         patch("pypto.runtime.worker._SimplerCallConfig", MagicMock()),
+        patch(
+            "pypto.runtime.worker.to_worker_task_args",
+            side_effect=lambda _worker, args, *_rest: args,
+        ),
     ):
         instance = MagicMock()
         instance.register.side_effect = lambda cc: 100 + id(cc) % 100  # deterministic cid

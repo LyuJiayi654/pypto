@@ -11,10 +11,10 @@
 orchestration code.
 
 It must:
-- wrap a worker-resident :class:`DeviceTensor` as
-  ``Tensor.make(..., child_memory=True)``;
+- resolve a worker-resident :class:`DeviceTensor` through the active
+  ``DistributedWorker``;
 - pass an already-built ``Tensor`` through unchanged;
-- delegate a host ``torch.Tensor`` to simpler's ``make_tensor_arg``.
+- delegate a host ``torch.Tensor`` with the active simpler Worker.
 """
 
 from unittest.mock import MagicMock, patch
@@ -36,57 +36,45 @@ else:
 pytestmark = pytest.mark.skipif(not _has_simpler, reason="make_tensor_arg requires the simpler package")
 
 
-def test_device_tensor_produces_child_memory_true():
-    captured: dict = {"make_calls": []}
-
-    def _make(*, data, shapes, dtype, child_memory=False):
-        captured["make_calls"].append(
-            {"data": data, "shapes": tuple(shapes), "dtype": dtype, "child_memory": child_memory}
-        )
-        return MagicMock(name=f"Tensor(0x{data:x})")
-
+def test_device_tensor_uses_bound_resolver():
     dt = DeviceTensor(0xABCD, (8, 16), torch.float16)
+    sentinel = MagicMock(name="Tensor(device)")
+    resolver = MagicMock(return_value=sentinel)
+    worker = MagicMock(name="Worker(level=3)")
 
-    with (
-        patch("pypto.runtime.task_interface.Tensor.make", side_effect=_make),
-        patch(
-            "pypto.runtime.task_interface.torch_dtype_to_datatype",
-            side_effect=lambda d: f"<dtype:{d}>",
-        ),
-    ):
-        from pypto.runtime.tensor_arg import make_tensor_arg  # noqa: PLC0415
+    from pypto.runtime.tensor_arg import bind_tensor_arg_context, make_tensor_arg  # noqa: PLC0415
 
-        make_tensor_arg(dt)
+    with bind_tensor_arg_context(worker, resolver):
+        result = make_tensor_arg(dt)
 
-    assert len(captured["make_calls"]) == 1
-    call = captured["make_calls"][0]
-    assert call["data"] == 0xABCD
-    assert call["shapes"] == (8, 16)
-    assert call["child_memory"] is True
-    assert call["dtype"] == "<dtype:torch.float16>"
+    resolver.assert_called_once_with(dt)
+    assert result is sentinel
 
 
 def test_continuous_tensor_passes_through():
-    from pypto.runtime.task_interface import (  # noqa: PLC0415
-        Tensor,  # pyright: ignore[reportAttributeAccessIssue]
-        torch_dtype_to_datatype,  # pyright: ignore[reportAttributeAccessIssue]
-    )
+    from pypto.runtime import task_interface  # noqa: PLC0415
     from pypto.runtime.tensor_arg import make_tensor_arg  # noqa: PLC0415
 
-    ct = Tensor.make(0x1000, (4,), torch_dtype_to_datatype(torch.float32), child_memory=True)
-    assert make_tensor_arg(ct) is ct
+    class FakeTensor:
+        pass
+
+    tensor = FakeTensor()
+    with patch.object(task_interface, "Tensor", FakeTensor):
+        assert make_tensor_arg(tensor) is tensor
 
 
 def test_host_tensor_delegates_to_simpler():
     host = torch.zeros(4, 4, dtype=torch.float32)
     sentinel = MagicMock(name="Tensor(host)")
+    worker = MagicMock(name="Worker(level=3)")
 
     with patch("pypto.runtime.task_interface.make_tensor_arg", return_value=sentinel) as impl:
-        from pypto.runtime.tensor_arg import make_tensor_arg  # noqa: PLC0415
+        from pypto.runtime.tensor_arg import bind_tensor_arg_context, make_tensor_arg  # noqa: PLC0415
 
-        result = make_tensor_arg(host)
+        with bind_tensor_arg_context(worker):
+            result = make_tensor_arg(host)
 
-    impl.assert_called_once_with(host)
+    impl.assert_called_once_with(worker, host)
     assert result is sentinel
 
 

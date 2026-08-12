@@ -171,9 +171,9 @@ def _run_stacked(test_config, device_ids, program, worker_ids, *, inherited_sour
             assert monkeypatch is not None
             make_tensor_arg = task_interface.make_tensor_arg
 
-            def record_host_tensor_arg(arg):
+            def record_host_tensor_arg(worker, arg):
                 host_tensor_args.append(arg)
-                return make_tensor_arg(arg)
+                return make_tensor_arg(worker, arg)
 
             monkeypatch.setattr(task_interface, "make_tensor_arg", record_host_tensor_arg)
         try:

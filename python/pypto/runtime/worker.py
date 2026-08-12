@@ -42,6 +42,7 @@ Example — explicit dispatch::
 from __future__ import annotations
 
 import contextvars
+import ctypes
 import weakref
 from typing import TYPE_CHECKING, Any
 
@@ -97,6 +98,69 @@ _ACTIVE_WORKERS: contextvars.ContextVar[tuple[ChipWorker, ...]] = contextvars.Co
 # default-constructed ``with ChipWorker():`` bind-matches a freshly compiled
 # program instead of silently falling through to a one-shot worker.
 _DEFAULT_RUNTIME = "tensormap_and_ringbuffer"
+
+
+def to_worker_task_args(
+    worker: Any,
+    args: Any,
+    device_buffers: dict[tuple[int, int], Any] | None = None,
+) -> Any:
+    """Convert PyPTO's chip-side argument pack to Simpler's host dispatch ABI.
+
+    ``CompiledProgram.build_orch_args`` builds the compact chip-side POD that
+    generated orchestration consumes. ``simpler.Worker.run`` accepts the
+    self-describing ``TaskArgs`` wire form instead, so manual runtime drivers
+    must convert the pack while the owning Worker is known.
+
+    Host tensors are named through ``Worker.make_tensor_arg``. Device tensors
+    must resolve to a live Buffer allocated by the active PyPTO ChipWorker so
+    their canonical identity and ownership are preserved.
+    """
+    from .task_interface import (  # noqa: PLC0415
+        TaskArgs,  # pyright: ignore[reportAttributeAccessIssue]
+        get_element_size,  # pyright: ignore[reportAttributeAccessIssue]
+    )
+
+    if isinstance(args, TaskArgs):
+        return args
+
+    task_args = TaskArgs()
+    for i in range(args.tensor_count()):
+        tensor = args.tensor(i)
+        shapes = tuple(int(dim) for dim in tensor.shapes)
+        strides = tuple(int(stride) for stride in tensor.strides)
+        dtype = tensor.dtype
+        dtype_value = int(getattr(dtype, "value", dtype))
+
+        if tensor.child_memory:
+            handle = None if device_buffers is None else device_buffers.get((0, int(tensor.data)))
+            if handle is None:
+                raise ValueError(
+                    f"device tensor pointer 0x{int(tensor.data):x} is not a live allocation "
+                    "owned by the active ChipWorker"
+                )
+            byte_offset = int(tensor.start_offset) * int(get_element_size(dtype))
+            tensor_arg = handle.tensor(
+                shapes=shapes,
+                dtype=dtype,
+                strides=strides,
+                byte_offset=byte_offset,
+            )
+        else:
+            if int(tensor.start_offset) != 0 or not bool(tensor.is_contiguous):
+                raise ValueError("PyPTO host orchestration arguments must be contiguous with start_offset=0")
+            host_view = (ctypes.c_ubyte * int(tensor.nbytes())).from_address(int(tensor.data))
+            tensor_arg = worker.make_tensor_arg(
+                host_view,
+                shapes=shapes,
+                dtype=dtype_value,
+                strides=strides,
+            )
+        task_args.add_tensor(tensor_arg)
+
+    for i in range(args.scalar_count()):
+        task_args.add_scalar(args.scalar(i))
+    return task_args
 
 
 class ChipWorker(Worker):
@@ -169,6 +233,7 @@ class ChipWorker(Worker):
             enable_sdma=self._enable_sdma,
         )
         self._initialized = False
+        self._device_buffers: dict[tuple[int, int], Any] = {}
         # Maps id(chip_callable) -> handle returned by simpler Worker.register()
         # (an opaque ``CallableHandle`` since runtime #891; typed ``Any`` to
         # avoid a hard import of the simpler type). Simpler's L2 ABI requires
@@ -230,6 +295,7 @@ class ChipWorker(Worker):
             handle._mark_closed()
         self._handles.clear()
         self._impl.close()
+        self._device_buffers.clear()
         self._initialized = False
 
     # ------------------------------------------------------------------
@@ -261,12 +327,20 @@ class ChipWorker(Worker):
         self._require_initialized("malloc")
         if not isinstance(nbytes, int) or nbytes <= 0:
             raise ValueError(f"nbytes must be a positive int, got {nbytes!r}")
-        return self._impl.malloc(nbytes, worker_id)
+        if worker_id != 0:
+            raise ValueError("ChipWorker only supports worker_id=0")
+        handle = self._impl.malloc(nbytes)
+        ptr = int(handle.base)
+        self._device_buffers[(worker_id, ptr)] = handle
+        return ptr
 
     def free(self, ptr: int, *, worker_id: int = 0) -> None:
         """Release a pointer previously returned by :meth:`malloc`."""
         self._require_initialized("free")
-        self._impl.free(ptr, worker_id)
+        handle = self._device_buffers.pop((worker_id, ptr), None)
+        if handle is None:
+            raise ValueError(f"unknown device allocation 0x{ptr:x} on worker {worker_id}")
+        self._impl.free(handle)
 
     def copy_to(
         self,
@@ -283,7 +357,11 @@ class ChipWorker(Worker):
         this call returns.
         """
         self._require_initialized("copy_to")
-        self._impl.copy_to(dst_dev_ptr, src_host_ptr, nbytes, worker_id)
+        handle = self._device_buffers.get((worker_id, dst_dev_ptr))
+        if handle is None:
+            raise ValueError(f"unknown device allocation 0x{dst_dev_ptr:x} on worker {worker_id}")
+        src = (ctypes.c_ubyte * nbytes).from_address(src_host_ptr)
+        self._impl.copy_to(handle, src)
 
     def copy_from(
         self,
@@ -295,7 +373,11 @@ class ChipWorker(Worker):
     ) -> None:
         """D2H copy: ``nbytes`` bytes from device *src_dev_ptr* back to host *dst_host_ptr*."""
         self._require_initialized("copy_from")
-        self._impl.copy_from(dst_host_ptr, src_dev_ptr, nbytes, worker_id)
+        handle = self._device_buffers.get((worker_id, src_dev_ptr))
+        if handle is None:
+            raise ValueError(f"unknown device allocation 0x{src_dev_ptr:x} on worker {worker_id}")
+        dst = (ctypes.c_ubyte * nbytes).from_address(dst_host_ptr)
+        self._impl.copy_from(dst, handle)
 
     # ``alloc_tensor`` / ``free_tensor`` are inherited from Worker (ABC).
     # L2 uses the default ``_prepare_init`` (a defensive contiguous CPU copy);
@@ -519,7 +601,8 @@ class ChipWorker(Worker):
         if cid is None:
             cid = self._impl.register(chip_callable)
             self._cid_cache[key] = cid
-        self._impl.run(cid, orch_args, cfg)
+        task_args = to_worker_task_args(self._impl, orch_args, self._device_buffers)
+        self._impl.run(cid, task_args, cfg)
 
     # ------------------------------------------------------------------
     # Context manager — publishes ``self`` on the active stack

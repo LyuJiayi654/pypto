@@ -209,6 +209,25 @@ static std::string FormatInitializePipeAttrs(const CallPtr& op, int dir_mask, in
   return oss.str();
 }
 
+// PTOAS accepts an explicit AIV lane operand on split TPUSH/TPOP ops. Simpler
+// carries the logical lane in its runtime payload, so thread the synthetic
+// runtime-backed subblock parameter into PTOAS instead of relying on an
+// implicit hardware register.
+static std::string EmitAivSubblockIdOperand(codegen::PTOCodegen& codegen, int split) {
+  if (split == 0 || !codegen.IsAIVFunction()) {
+    return "";
+  }
+  const std::string subblock_i32 = codegen.GetSpmdSubblockIdxArgSSA();
+  // Manually authored low-level AIV functions can still use the legacy fixed
+  // lane path and therefore have no synthetic runtime subblock parameter.
+  if (subblock_i32.empty()) {
+    return "";
+  }
+  const std::string subblock_i64 = codegen.NewNamedTemp("aiv_subblockid");
+  codegen.Emit(subblock_i64 + " = arith.extsi " + subblock_i32 + " : i32 to i64");
+  return subblock_i64;
+}
+
 // tile.tpush_to_{aic,aiv}: Push a tile across cores (Cube<->Vector). `target`
 // is "aic" or "aiv" and selects both the emitted pto op name and diagnostics.
 static std::string MakeTpushCodegenPTO(const char* target, const CallPtr& op,
@@ -229,13 +248,16 @@ static std::string MakeTpushCodegenPTO(const char* target, const CallPtr& op,
   std::string tile_type = codegen.GetExprTypeAnnotation(op->args_[0]);
   const bool restore_valid_shape =
       EmitTpushTransportValidShape(target, op, codegen, tile_buf, tile_type, split);
-
+  const std::string subblock_id = EmitAivSubblockIdOperand(codegen, split);
   std::ostringstream oss;
   oss << "pto.tpush_to_" << target << "(" << tile_buf;
   if (!tile_type.empty()) {
     oss << " : " << tile_type;
   }
   oss << ") " << FormatFrontendPipeAttrs(op, split);
+  if (!subblock_id.empty()) {
+    oss << " aiv_subblockid(" << subblock_id << ")";
+  }
   codegen.Emit(oss.str());
   if (restore_valid_shape) {
     EmitLogicalTpushValidShapeRestore(op, codegen, tile_buf, tile_type);
@@ -304,6 +326,7 @@ static std::string MakeTpopCodegenPTO(const char* target, const CallPtr& op,
   // static logical extents. Keep the existing direct TPOP behavior for dynamic
   // valid shapes until PTO exposes a dynamic metadata rebind for pipe entries.
   std::string transport_buf = use_full_box ? codegen.NewNamedTemp("tpop_transport") : result_buf;
+  const std::string subblock_id = EmitAivSubblockIdOperand(codegen, split);
   std::ostringstream oss;
   oss << transport_buf << " = pto.tpop_from_" << target;
   if (!transport_row.empty() || !transport_col.empty()) {
@@ -312,6 +335,9 @@ static std::string MakeTpopCodegenPTO(const char* target, const CallPtr& op,
     oss << "(" << transport_row << ", " << transport_col << ")";
   }
   oss << " " << FormatFrontendPipeAttrs(op, split);
+  if (!subblock_id.empty()) {
+    oss << " aiv_subblockid(" << subblock_id << ")";
+  }
   if (!result_type.empty()) {
     oss << " -> " << result_type;
   }

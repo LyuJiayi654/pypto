@@ -58,8 +58,16 @@ _DTYPE_MAP: dict[str, tuple[type, torch.dtype]] = {
     "UINT8": (ctypes.c_uint8, torch.uint8),
 }
 
-
-_PERSISTENT_ZERO_CHUNK_BYTES = 1 << 20
+_DTYPE_VALUE_TO_NAME = {
+    0: "FLOAT32",
+    1: "FLOAT16",
+    2: "INT32",
+    3: "INT16",
+    4: "INT8",
+    5: "UINT8",
+    6: "BFLOAT16",
+    7: "INT64",
+}
 
 
 def _resolve_persistent_window_reset(persistent: bool, reset_persistent_windows: bool | None) -> bool:
@@ -250,7 +258,7 @@ class _RetainedDomainLease:
 
 
 def _tensor_from_continuous(ct) -> torch.Tensor:
-    """Convert a simpler ``Tensor`` to a torch.Tensor (zero-copy).
+    """Convert a simpler continuous mapped argument to a torch.Tensor (zero-copy).
 
     The returned tensor shares the same memory as the simpler ``Tensor``
     (via shared memory), so modifications are visible across processes.
@@ -260,10 +268,11 @@ def _tensor_from_continuous(ct) -> torch.Tensor:
     ``torch.Tensor.view(dtype)`` — a zero-copy bit-cast that preserves the
     shared-memory aliasing required for ``Out``/``InOut`` parameters.
     """
-    # ``str(ct.dtype)`` yields ``"DataType.FLOAT32"``; strip the enum prefix
-    # to match the bare type names used as keys in ``_DTYPE_MAP``.
+    # ``MappedArg.dtype`` is the integer wire value. Older in-process callers
+    # may still provide ``DataType.FLOAT32``; accept both representations.
+    dtype_value = getattr(ct.dtype, "value", ct.dtype)
     dtype_str = str(ct.dtype)
-    dtype_key = dtype_str.rsplit(".", 1)[-1]
+    dtype_key = _DTYPE_VALUE_TO_NAME.get(dtype_value, dtype_str.rsplit(".", 1)[-1])
     try:
         c_type, torch_dtype = _DTYPE_MAP[dtype_key]
     except KeyError as exc:
@@ -277,16 +286,21 @@ def _tensor_from_continuous(ct) -> torch.Tensor:
     for s in ct.shapes:
         n_elements *= s
 
-    # Compute the buffer length in units of c_type, then in elements of torch_dtype.
+    # A SubWorker receives a runtime ``MappedArg`` whose ``buffer`` is already
+    # resolved into this process. Keep the legacy address path for callers that
+    # still hand this helper a materialized chip POD.
     element_bytes = ctypes.sizeof(c_type)
     torch_bytes = torch.tensor([], dtype=torch_dtype).element_size()
     n_c_elements = n_elements * torch_bytes // element_bytes
 
-    arr = np.ctypeslib.as_array(
-        ctypes.cast(ct.data, ctypes.POINTER(c_type)),
-        shape=(n_c_elements,),
-    )
-    t = torch.from_numpy(arr)
+    if hasattr(ct, "buffer"):
+        t = torch.frombuffer(ct.buffer, dtype=torch.uint8, count=n_elements * torch_bytes)
+    else:
+        arr = np.ctypeslib.as_array(
+            ctypes.cast(ct.data, ctypes.POINTER(c_type)),
+            shape=(n_c_elements,),
+        )
+        t = torch.from_numpy(arr)
     if t.dtype != torch_dtype:
         # view(dtype) reinterprets the bytes without copying — preserves shared memory.
         t = t.view(torch_dtype)
@@ -683,10 +697,10 @@ def _make_call_config(
                 dfx.enable_dep_gen or (co_enable_swimlane_dep_gen and dfx.enable_l2_swimlane)
             )
             call_config.enable_scope_stats = dfx.enable_scope_stats
-            call_config.enable_l2_swimlane = dfx.enable_l2_swimlane
+            call_config.enable_chip_swimlane = dfx.enable_l2_swimlane
             # Base dir shared by every chip; ``_submit_chip`` namespaces it per
             # dispatch (``<dfx_base>/rank{worker}/d{k}``) so per-dispatch
-            # artifacts (pmu.csv, deps.json, l2_swimlane_records.json, ...) don't
+            # artifacts (pmu.csv, deps.json, chip_swimlane_records.json, ...) don't
             # overwrite each other — even when one card runs multiple dispatches.
             call_config.output_prefix = str(dfx_base)
     return call_config
@@ -984,7 +998,7 @@ def _collect_l3_swimlane(output_dir: Path, platform: str) -> None:
     """Convert each dispatch's swimlane records into a ``merged_swimlane_*.json``.
 
     The runtime writes ``rank{r}/d{k}/deps.json`` in the graph pass and
-    ``rank{r}/d{k}/l2_swimlane_records.json`` in the clean timing pass
+    ``rank{r}/d{k}/chip_swimlane_records.json`` in the clean timing pass
     (``_submit_chip`` namespaces the directory by card *and* the card's k-th
     dispatch, and both passes reset that counter). Globbing ``rank*`` — rather
     than iterating a rank count — picks up
@@ -1011,7 +1025,7 @@ def _collect_l3_swimlane(output_dir: Path, platform: str) -> None:
     if platform.endswith("sim"):
         print(
             "Skipping L3 swimlane conversion on simulator: merged_swimlane_*.json "
-            "is only generated for onboard runs (raw l2_swimlane_records.json kept)."
+            "is only generated for onboard runs (raw chip_swimlane_records.json kept)."
         )
         return
 
@@ -1042,7 +1056,7 @@ def _collect_l3_swimlane(output_dir: Path, platform: str) -> None:
         # unrelated diagnostic dir under rank_dir is never picked up.
         dispatch_dirs = sorted(d for d in rank_dir.glob(_DISPATCH_DIR_GLOB) if d.is_dir())
         for disp_dir in dispatch_dirs:
-            records = disp_dir / "l2_swimlane_records.json"
+            records = disp_dir / "chip_swimlane_records.json"
             if not records.exists():
                 continue
             # Best-effort, as documented: a write/convert failure for one
@@ -1106,6 +1120,7 @@ def _is_simpler_tensor(arg: Any) -> bool:
 
 
 def _make_dispatch_orchestration(
+    w: Any,
     entry_fn: Any,
     tensors: dict[str, Any],
     chip_cids: dict[str, Any],
@@ -1113,6 +1128,7 @@ def _make_dispatch_orchestration(
     call_config: Any,
     device_nums: int,
     keepalive: list[Any],
+    device_resolver: Callable[[DeviceTensor], Any] | None = None,
 ) -> Callable[..., None]:
     """Build one orchestration closure over a handle-owned metadata frame."""
     # ``world_size`` is the only worker-level scalar the entry needs; codegen
@@ -1135,16 +1151,19 @@ def _make_dispatch_orchestration(
         # across the swimlane two-pass, exactly like the DFX counter above.
         orch._pypto_chip_count = device_nums
         orch._pypto_commless_seq = 0
-        entry_fn(
-            orch,
-            _unused_args,
-            call_config,
-            tensors=tensors,
-            callables=chip_cids,
-            sub_ids=sub_ids,
-            _keep=keepalive,
-            world_size=device_nums,
-        )
+        from .tensor_arg import bind_tensor_arg_context  # noqa: PLC0415
+
+        with bind_tensor_arg_context(w, device_resolver):
+            entry_fn(
+                orch,
+                _unused_args,
+                call_config,
+                tensors=tensors,
+                callables=chip_cids,
+                sub_ids=sub_ids,
+                _keep=keepalive,
+                world_size=device_nums,
+            )
 
     return orch_fn
 
@@ -1158,9 +1177,11 @@ def _submit_dispatch(
     call_config: Any,
     device_nums: int,
     keepalive: list[Any],
+    device_resolver: Callable[[DeviceTensor], Any] | None = None,
 ) -> Any:
     """Submit one orchestration closure and return Simpler's run handle."""
     orch_fn = _make_dispatch_orchestration(
+        w,
         entry_fn,
         tensors,
         chip_cids,
@@ -1168,6 +1189,7 @@ def _submit_dispatch(
         call_config,
         device_nums,
         keepalive,
+        device_resolver,
     )
     return w.submit(orch_fn)
 
@@ -1205,13 +1227,13 @@ def execute_distributed(
 
     One-shot path: runs the full setup, dispatches once, then tears the Worker
     down. Supports host ``torch.Tensor`` inputs (placed in shared memory before
-    the fork). For repeated dispatch with device-resident inputs, prefer
+    the fork). Device-resident inputs require the canonical ``Buffer`` identity
+    owned by a prepared worker, so use
     :meth:`DistributedCompiledProgram.prepare` → :class:`DistributedWorker`.
 
     Args:
         compiled: The DistributedCompiledProgram instance.
-        coerced_args: Coerced arguments — host ``torch.Tensor`` or
-            worker-resident :class:`~pypto.runtime.DeviceTensor`.
+        coerced_args: Coerced host ``torch.Tensor`` arguments.
         config: Optional per-dispatch :class:`RunConfig`. Its per-task
             ring-sizing overrides (``ring_task_window`` / ``ring_heap`` /
             ``ring_dep_pool``, each a scalar or a per-ring list of 4 ints) size
@@ -1233,6 +1255,18 @@ def execute_distributed(
         place; per-run timing is read from the runtime's ``[STRACE]`` log
         markers (simpler PR #1177), not returned here.
     """
+    host_args: list[torch.Tensor] = []
+    for arg in coerced_args:
+        if isinstance(arg, (DeviceTensor, StackedDeviceTensor)):
+            raise ValueError(
+                "one-shot distributed execution cannot accept DeviceTensor or StackedDeviceTensor arguments; "
+                "the updated runtime requires their canonical Buffer identity "
+                "to be owned by the active Worker. "
+                "Use compiled.prepare(), allocate through that DistributedWorker, and dispatch through "
+                "the same handle."
+            )
+        host_args.append(arg)
+
     dc = compiled._distributed_config
     output_dir = compiled.output_dir
 
@@ -1240,17 +1274,10 @@ def execute_distributed(
     entry_fn, alloc_fn = _load_orch_entry(output_dir)
 
     # Build tensor mapping from parameter names. Host torch.Tensor inputs must
-    # be in shared memory before the fork; DeviceTensor inputs are device
-    # pointers forwarded at submit time and need no pre-fork shared memory.
+    # be in shared memory before the fork.
     param_infos, _, _ = compiled._get_metadata()
-    tensors: dict[str, torch.Tensor | DeviceTensor | StackedDeviceTensor] = {}
-    for info, arg in zip(param_infos, coerced_args, strict=True):
-        # Worker-resident inputs (a DeviceTensor, or a StackedDeviceTensor whose
-        # per-rank shards are each DeviceTensors) are device pointers forwarded
-        # at submit time — no pre-fork shared memory needed.
-        if isinstance(arg, (DeviceTensor, StackedDeviceTensor)):
-            tensors[info.name] = arg
-            continue
+    tensors: dict[str, torch.Tensor] = {}
+    for info, arg in zip(param_infos, host_args, strict=True):
         if not arg.is_shared():
             arg.share_memory_()
         tensors[info.name] = arg
@@ -1477,15 +1504,7 @@ class DistributedWorker(Worker):
         self._inherited_host_storage_ptrs = {tensor.untyped_storage().data_ptr() for tensor in inherited}
         self._persistent = bool(persistent)
         self._reset_persistent_windows = reset_persistent_windows
-        # ``orch.copy_to`` runs in each forked chip child and dereferences the
-        # source host pointer there. Keep a read-only zero chunk allocated
-        # before ``Worker.init()`` forks, then reuse it to restore retained
-        # CommDomain windows in bounded-size copies between requests.
-        self._persistent_zero = (
-            torch.zeros(_PERSISTENT_ZERO_CHUNK_BYTES, dtype=torch.uint8).share_memory_()
-            if self._persistent and self._reset_persistent_windows
-            else None
-        )
+        self._persistent_zero = self._persistent and self._reset_persistent_windows
         self._persistent_error: BaseException | None = None
         self._persistent_error_reported = False
         self._persistent_domains_by_program: dict[str, dict[str, tuple[tuple[Any, ...], Any]]] = {}
@@ -1512,6 +1531,12 @@ class DistributedWorker(Worker):
         # so there is no id()-reuse hazard from a GC'd program. ``run(compiled,
         # ...)`` looks the selected program up here; ``__call__`` uses ``_compiled``.
         self._states: dict[DistributedCompiledProgram, dict[str, Any]] = {}
+        self._device_buffers: dict[tuple[int, int], Any] = {}
+        # ``DeviceTensor`` deliberately remains a small public pointer wrapper,
+        # but the new runtime requires every L3 argument to carry the canonical
+        # Buffer identity. Keep the exact objects returned by alloc_tensor so
+        # equal virtual addresses on different chips remain unambiguous.
+        self._device_tensor_buffers: dict[int, tuple[DeviceTensor, Any]] = {}
 
         # Wrap setup so a failure at any step still releases the worker and the
         # comm rootinfo temp file. ``self.close()`` can't be used here — it reads
@@ -1774,21 +1799,17 @@ class DistributedWorker(Worker):
 
     def _reset_persistent_domains(self, orch: Any, domains: dict[str, tuple[tuple[Any, ...], Any]]) -> None:
         """Restore retained windows to the zero-filled fresh-allocation state."""
-        assert self._persistent_zero is not None
-        zero_ptr = int(self._persistent_zero.data_ptr())
-        chunk_size = int(self._persistent_zero.numel())
+        assert self._persistent_zero
         for _spec, handle in domains.values():
             for worker_id in handle.workers:
                 context = handle[worker_id]
-                window_size = int(context.actual_window_size)
-                for offset in range(0, window_size, chunk_size):
-                    nbytes = min(chunk_size, window_size - offset)
-                    orch.copy_to(
-                        int(worker_id),
-                        int(context.local_window_base) + offset,
-                        zero_ptr,
-                        nbytes,
-                    )
+                for device_buffer in context.buffers.values():
+                    zero = self._w.create_buffer(int(device_buffer.nbytes))
+                    try:
+                        ctypes.memset(int(zero.base), 0, int(zero.nbytes))
+                        orch.copy_to(device_buffer, zero)
+                    finally:
+                        self._w.release_buffer(zero)
 
     def _detach_persistent_domain(self, handle: Any) -> None:
         """Transfer one CommDomain from the current run to Worker ownership.
@@ -1878,17 +1899,20 @@ class DistributedWorker(Worker):
             if program_domains and self._reset_persistent_windows:
                 self._reset_persistent_domains(orch, program_domains)
             _reset_dfx_dispatch_state(orch, state["chip_cids"])
-            state["entry_fn"](
-                orch,
-                None,
-                call_config,
-                tensors=tensors,
-                callables=state["chip_cids"],
-                sub_ids=state["sub_ids"],
-                _keep=keepalive,
-                world_size=state["device_nums"],
-                _domain_provider=domain_provider,
-            )
+            from .tensor_arg import bind_tensor_arg_context  # noqa: PLC0415
+
+            with bind_tensor_arg_context(self._w, self._device_tensor_arg):
+                state["entry_fn"](
+                    orch,
+                    None,
+                    call_config,
+                    tensors=tensors,
+                    callables=state["chip_cids"],
+                    sub_ids=state["sub_ids"],
+                    _keep=keepalive,
+                    world_size=state["device_nums"],
+                    _domain_provider=domain_provider,
+                )
 
         try:
             return self._w.submit(run_request)
@@ -1922,6 +1946,7 @@ class DistributedWorker(Worker):
             call_config,
             state["device_nums"],
             keepalive,
+            self._device_tensor_arg,
         )
 
     def _submit_native_dispatch(
@@ -1978,12 +2003,29 @@ class DistributedWorker(Worker):
     def malloc(self, nbytes: int, *, worker_id: int = 0) -> int:
         """Allocate ``nbytes`` on chip *worker_id*; returns a device pointer."""
         self._require_open("malloc")
-        return int(self._w.malloc(nbytes, worker_id))
+        if not isinstance(nbytes, int) or nbytes <= 0:
+            raise ValueError(f"nbytes must be a positive int, got {nbytes!r}")
+        from .task_interface import (  # noqa: PLC0415
+            DataType,  # pyright: ignore[reportAttributeAccessIssue]
+        )
+
+        handle = self._w.alloc_child_tensor(worker_id, (nbytes,), DataType.UINT8)
+        ptr = int(handle.base)
+        self._device_buffers[(worker_id, ptr)] = handle
+        return ptr
 
     def free(self, ptr: int, *, worker_id: int = 0) -> None:
         """Release a pointer previously returned by :meth:`malloc`."""
         self._require_open("free")
-        self._w.free(ptr, worker_id)
+        handle = self._device_buffers.pop((worker_id, ptr), None)
+        if handle is None:
+            raise ValueError(f"unknown device allocation 0x{ptr:x} on worker {worker_id}")
+        self._device_tensor_buffers = {
+            tensor_id: owned
+            for tensor_id, owned in self._device_tensor_buffers.items()
+            if owned[1] is not handle
+        }
+        self._w.free(handle)
 
     def committed_device_memory(self, worker_id: int = 0) -> int:
         """Total device HBM (bytes) committed by chip *worker_id*'s ``MemoryAllocator``
@@ -1999,12 +2041,74 @@ class DistributedWorker(Worker):
     def copy_to(self, dst_dev_ptr: int, src_host_ptr: int, nbytes: int, *, worker_id: int = 0) -> None:
         """H2D copy: ``nbytes`` from host *src_host_ptr* to device *dst_dev_ptr*."""
         self._require_open("copy_to")
-        self._w.copy_to(dst_dev_ptr, src_host_ptr, nbytes, worker_id)
+        handle = self._device_buffers.get((worker_id, dst_dev_ptr))
+        if handle is None:
+            raise ValueError(f"unknown device allocation 0x{dst_dev_ptr:x} on worker {worker_id}")
+        host = self._w.create_buffer(nbytes)
+        try:
+            ctypes.memmove(int(host.base), src_host_ptr, nbytes)
+            self._w.copy_to(handle, host)
+        finally:
+            self._w.release_buffer(host)
 
     def copy_from(self, dst_host_ptr: int, src_dev_ptr: int, nbytes: int, *, worker_id: int = 0) -> None:
         """D2H copy: ``nbytes`` from device *src_dev_ptr* back to host *dst_host_ptr*."""
         self._require_open("copy_from")
-        self._w.copy_from(dst_host_ptr, src_dev_ptr, nbytes, worker_id)
+        handle = self._device_buffers.get((worker_id, src_dev_ptr))
+        if handle is None:
+            raise ValueError(f"unknown device allocation 0x{src_dev_ptr:x} on worker {worker_id}")
+        host = self._w.create_buffer(nbytes)
+        try:
+            self._w.copy_from(host, handle)
+            ctypes.memmove(dst_host_ptr, int(host.base), nbytes)
+        finally:
+            self._w.release_buffer(host)
+
+    def _device_tensor_arg(self, tensor: DeviceTensor) -> Any:
+        """Build a self-describing Simpler tensor for a resident device allocation."""
+        owned = self._device_tensor_buffers.get(id(tensor))
+        if owned is not None and owned[0] is tensor:
+            handle = owned[1]
+        else:
+            matches = [
+                candidate
+                for (_worker_id, ptr), candidate in self._device_buffers.items()
+                if ptr == tensor.data_ptr
+            ]
+            handle = matches[0] if len(matches) == 1 else None
+        if handle is None:
+            raise ValueError(
+                f"DeviceTensor pointer 0x{tensor.data_ptr:x} is not a unique live allocation "
+                "owned by this DistributedWorker"
+            )
+        from .task_interface import torch_dtype_to_datatype  # noqa: PLC0415
+
+        try:
+            dtype = torch_dtype_to_datatype(tensor.dtype)
+        except KeyError as exc:
+            raise ValueError(f"Unsupported DeviceTensor dtype: {tensor.dtype}") from exc
+        return handle.tensor(shapes=tensor.shape, dtype=dtype)
+
+    def alloc_tensor(
+        self,
+        shape: Sequence[int],
+        dtype: torch.dtype,
+        *,
+        init: torch.Tensor | None = None,
+        worker_id: int = 0,
+    ) -> DeviceTensor:
+        """Allocate a tensor and retain its canonical runtime Buffer identity."""
+        tensor = super().alloc_tensor(shape, dtype, init=init, worker_id=worker_id)
+        self._device_tensor_buffers[id(tensor)] = (
+            tensor,
+            self._device_buffers[(worker_id, tensor.data_ptr)],
+        )
+        return tensor
+
+    def free_tensor(self, tensor: DeviceTensor, *, worker_id: int = 0) -> None:
+        """Release a tensor and its object-to-Buffer identity mapping."""
+        super().free_tensor(tensor, worker_id=worker_id)
+        self._device_tensor_buffers.pop(id(tensor), None)
 
     # ``alloc_tensor`` / ``free_tensor`` are inherited from Worker ABC.
     # Only the two behaviours that genuinely differ from L2 are overridden below:
@@ -2074,7 +2178,8 @@ class DistributedWorker(Worker):
         orchestrator slices per rank: ``for r in range(world_size):
         child(x[r], device=...)``). The generated ``host_orch`` indexes ``x[i]``
         to shard ``i``'s :class:`~pypto.runtime.DeviceTensor`, so the runtime
-        skips the per-dispatch H2D upload (``child_memory``) — the stack is
+        resolves each shard to its canonical runtime ``Buffer`` and skips the
+        per-dispatch H2D upload — the stack is
         uploaded once here and reused across every ``rt(...)`` dispatch.
 
         Args:
@@ -2467,6 +2572,9 @@ class DistributedWorker(Worker):
                 self._inherited_host_storage_ptrs.clear()
                 self._persistent_zero = None
                 self._persistent_domains_by_program.clear()
+                if self._close_complete:
+                    self._device_buffers.clear()
+                    self._device_tensor_buffers.clear()
             if first_error is not None:
                 raise first_error
         finally:

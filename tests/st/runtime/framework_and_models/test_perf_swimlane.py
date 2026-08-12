@@ -10,7 +10,7 @@
 """Swimlane JSON output validation tests.
 
 Runs matmul 64x64x64 (PTO backend) with profiling and validates the
-generated l2_swimlane_records.json in build_output/<run_dir>/dfx_outputs/.
+generated chip_swimlane_records.json in build_output/<run_dir>/dfx_outputs/.
 
 Requires ``--enable-l2-swimlane`` to be set; pass ``--platform=a2a3`` (or
 ``a5``) to switch the target.  All tests in this file are skipped
@@ -93,14 +93,14 @@ def swimlane_file(test_runner) -> Path:
     if not test_runner.config.enable_l2_swimlane:
         pytest.skip("pass --enable-l2-swimlane to run swimlane tests")
 
-    before: set[Path] = set(_BUILD_OUTPUT_DIR.glob("*/dfx_outputs/l2_swimlane_records.json"))
+    before: set[Path] = set(_BUILD_OUTPUT_DIR.glob("*/dfx_outputs/chip_swimlane_records.json"))
 
     result = test_runner.run(_MatmulPTO())
     assert result.passed, f"Matmul execution failed: {result.error}"
 
-    after: set[Path] = set(_BUILD_OUTPUT_DIR.glob("*/dfx_outputs/l2_swimlane_records.json"))
+    after: set[Path] = set(_BUILD_OUTPUT_DIR.glob("*/dfx_outputs/chip_swimlane_records.json"))
     new_files = after - before
-    assert new_files, "No l2_swimlane_records.json was generated in build_output/*/dfx_outputs/"
+    assert new_files, "No chip_swimlane_records.json was generated in build_output/*/dfx_outputs/"
 
     return max(new_files, key=lambda p: p.stat().st_mtime)
 
@@ -118,10 +118,10 @@ def swimlane_data(swimlane_file: Path) -> dict:
 
 
 class TestSwimlaneOutput:
-    """Validate the structure and content of l2_swimlane_records.json."""
+    """Validate the structure and content of chip_swimlane_records.json."""
 
     def test_file_generated(self, swimlane_file: Path):
-        """A l2_swimlane_records.json file is created in build_output/*/dfx_outputs/."""
+        """A chip_swimlane_records.json file is created in build_output/*/dfx_outputs/."""
         assert swimlane_file.exists(), f"Swimlane file not found: {swimlane_file}"
 
     def test_name_map_generated(self, swimlane_file: Path):
@@ -154,7 +154,7 @@ class TestSwimlaneOutput:
         """Each task contains all required fields with the correct types.
 
         Fields are the cross-platform intersection of the
-        l2_swimlane_records.json task schema. Per-task ``fanout`` /
+        chip_swimlane_records.json task schema. Per-task ``fanout`` /
         ``fanout_count`` are intentionally excluded: the a2a3 device hot
         path no longer records them (dep_gen's deps.json is the sole fanout
         source), so they are absent from a2a3 records.

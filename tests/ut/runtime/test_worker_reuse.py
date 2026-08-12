@@ -236,6 +236,15 @@ else:
 class TestExecuteOnDeviceReuse:
     """Verify ``execute_on_device`` reuses an active ChipWorker rather than constructing a new one."""
 
+    @pytest.fixture(autouse=True)
+    def _passthrough_worker_task_args(self):
+        """Keep these lifecycle tests focused on worker reuse, not argument conversion."""
+        with patch(
+            "pypto.runtime.worker.to_worker_task_args",
+            side_effect=lambda _worker, args, *_rest: args,
+        ):
+            yield
+
     def test_reuse_skips_init_and_close(self, fake_simpler_worker):
         from pypto.runtime.device_runner import execute_on_device  # noqa: PLC0415
 

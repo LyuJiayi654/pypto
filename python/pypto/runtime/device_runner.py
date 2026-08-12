@@ -62,7 +62,7 @@ from .task_interface import (
     ChipStorageTaskArgs,  # pyright: ignore[reportAttributeAccessIssue]
     CoreCallable,  # pyright: ignore[reportAttributeAccessIssue]
     Worker,  # pyright: ignore[reportAttributeAccessIssue]
-    make_tensor_arg,  # pyright: ignore[reportAttributeAccessIssue]
+    make_chip_tensor_arg,  # pyright: ignore[reportAttributeAccessIssue]
     scalar_to_uint64,  # pyright: ignore[reportAttributeAccessIssue]
 )
 
@@ -931,13 +931,13 @@ def execute_on_device(  # noqa: PLR0913
             required by prefetch artifacts. Defaults to ``False`` for legacy,
             hand-built, and non-prefetch callables.
         output_prefix: Directory under which the runtime writes diagnostic
-            artifacts (``l2_swimlane_records.json`` / ``args_dump/`` /
+            artifacts (``chip_swimlane_records.json`` / ``args_dump/`` /
             ``pmu.csv`` / ``deps.json`` / ``scope_stats/``). Required
             whenever any ``enable_*`` DFX flag is set — Simpler's
             ``CallConfig::validate()`` would otherwise reject the call.
             Passing it with all flags off creates no artefacts.
         enable_l2_swimlane: Capture per-task L2 perf records
-            (``l2_swimlane_records.json``). Mirrors runtime's
+            (``chip_swimlane_records.json``). Mirrors runtime's
             ``--enable-l2-swimlane`` pytest flag.
         enable_dump_args: Per-task argument dump level into
             ``<output_prefix>/args_dump/``. ``0`` off; ``1`` partial
@@ -986,15 +986,16 @@ def execute_on_device(  # noqa: PLR0913
         )
 
     from .worker import ChipWorker as _PyptoWorker  # noqa: PLC0415
+    from .worker import to_worker_task_args  # noqa: PLC0415
 
     cfg = CallConfig()
     if aicpu_thread_num is not None:
         cfg.aicpu_thread_num = aicpu_thread_num
-    # CallConfig nanobind setters: ``enable_l2_swimlane`` / ``enable_dep_gen``
+    # CallConfig nanobind setters: ``enable_chip_swimlane`` / ``enable_dep_gen``
     # take `bool`; ``enable_pmu`` is a raw ``int32_t`` (0 disabled, >0 event
     # type); ``enable_dump_args`` is a dump level (0 off, 1 partial, 2 full)
     # — the setter also accepts a bool (True→1 partial, False→0).
-    cfg.enable_l2_swimlane = enable_l2_swimlane
+    cfg.enable_chip_swimlane = enable_l2_swimlane
     cfg.enable_dump_args = enable_dump_args
     cfg.enable_pmu = enable_pmu
     cfg.enable_dep_gen = enable_dep_gen
@@ -1030,7 +1031,7 @@ def execute_on_device(  # noqa: PLR0913
             # register the callable, run it, then close — close() runs finalize()
             # so explicit unregister is unnecessary here.
             cid = worker.register(chip_callable)
-            worker.run(cid, orch_args, cfg)
+            worker.run(cid, to_worker_task_args(worker, orch_args), cfg)
         finally:
             worker.close()
 
@@ -1123,7 +1124,7 @@ def _collect_orch_args(
     for name, val in items:
         if isinstance(val, torch.Tensor):
             val = val.cpu().contiguous()
-            orch_args.add_tensor(make_tensor_arg(val))
+            orch_args.add_tensor(make_chip_tensor_arg(val))
             all_tensors[name] = val
             if is_output(name):
                 outputs[name] = val

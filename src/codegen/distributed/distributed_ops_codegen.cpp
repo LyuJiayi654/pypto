@@ -165,9 +165,8 @@ void EmitBuiltinWindowCollectiveDispatch(DistributedCodegen& codegen, const Call
       const std::string shape = codegen.FormatShapeTuple(dist_type->shape_);
       const std::string dtype_enum =
           "DataType." + DistributedCodegen::DataTypeToSimplerEnum(dist_type->dtype_);
-      codegen.Emit(ta_var + ".add_tensor(Tensor.make(data=" + arg_handle + "[" + rank_expr +
-                   "].buffer_ptrs[\"" + name + "\"], shapes=" + shape + ", dtype=" + dtype_enum +
-                   ", child_memory=True), " + tag + ")");
+      codegen.Emit(ta_var + ".add_tensor(" + arg_handle + "[" + rank_expr + "].buffers[\"" + name +
+                   "\"].tensor(shapes=" + shape + ", dtype=" + dtype_enum + "), " + tag + ")");
       continue;
     }
     if (ir::As<ir::TileType>(call->args_[i]->GetType())) {
@@ -203,7 +202,7 @@ void EmitBuiltinWindowCollectiveDispatch(DistributedCodegen& codegen, const Call
 // as part of the ``orch.allocate_domain(buffers=[CommBufferSpec(...), ...])``
 // spec list wrapping the host_orch body. The host_orch.py module never needs
 // to reach for the IR-level alloc op again — chip dispatch reads the device
-// pointer from ``__comm_d0[r].buffer_ptrs["<name>"]`` instead. Returning
+// buffer from ``__comm_d0[r].buffers["<name>"]`` instead. Returning
 // empty signals the surrounding ``AssignStmt`` visitor to drop the line.
 // ============================================================================
 REGISTER_DISTRIBUTED_OP(pld_tensor_alloc_window_buffer, "pld.tensor.alloc_window_buffer") {
@@ -217,7 +216,7 @@ REGISTER_DISTRIBUTED_OP(pld_tensor_alloc_window_buffer, "pld.tensor.alloc_window
 //
 // ``pld.tensor.window`` materialises a window-bound view at IR construction
 // time; ``MaterializeCommDomainScopes`` rewires every dispatch site so the per-rank
-// device pointer is read from ``__comm_d0[r].buffer_ptrs["<name>"]`` at
+// device buffer is read from ``__comm_d0[r].buffers["<name>"]`` at
 // chip-arg emission time. The host_orch.py module never calls back into
 // the IR window op.
 // ============================================================================

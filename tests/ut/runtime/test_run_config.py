@@ -307,7 +307,7 @@ class _SpyCallConfig:
 
     def __init__(self) -> None:
         self.runtime_env = _SpyRuntimeEnv()
-        self.enable_l2_swimlane = False
+        self.enable_chip_swimlane = False
         self.enable_dump_args = 0
         self.enable_pmu = 0
         self.enable_dep_gen = False
@@ -485,7 +485,7 @@ class TestMakeCallConfigDfx:
         cfg = _make_dist_call_config_with_fake(
             DistributedConfig(), run_config, monkeypatch, dfx_base=dfx_base
         )
-        assert cfg.enable_l2_swimlane is True
+        assert cfg.enable_chip_swimlane is True
         assert cfg.enable_dep_gen is True  # co-enabled
         assert cfg.output_prefix == str(dfx_base)
 
@@ -580,10 +580,10 @@ class TestRunConfigCompileForwarding:
             ChipStorageTaskArgs=FakeChipStorageTaskArgs,
             compile_and_assemble=fake_compile_and_assemble,
             execute_on_device=fake_execute_on_device,
-            make_tensor_arg=lambda _arg: object(),
+            make_chip_tensor_arg=lambda _arg: object(),
             scalar_to_uint64=lambda _arg: 0,
         )
-        fake_task_interface = types.SimpleNamespace(device_tensor_to_tensor=lambda _arg: object())
+        fake_task_interface = types.SimpleNamespace(device_tensor_to_chip_tensor=lambda _arg: object())
         monkeypatch.setitem(sys.modules, "pypto.runtime.device_runner", fake_device_runner)
         monkeypatch.setitem(sys.modules, "pypto.runtime.task_interface", fake_task_interface)
 
@@ -632,10 +632,10 @@ class TestRunConfigCompileForwarding:
             ChipStorageTaskArgs=FakeChipStorageTaskArgs,
             compile_and_assemble=fake_compile_and_assemble,
             execute_on_device=fake_execute_on_device,
-            make_tensor_arg=lambda _arg: object(),
+            make_chip_tensor_arg=lambda _arg: object(),
             scalar_to_uint64=lambda _arg: 0,
         )
-        fake_task_interface = types.SimpleNamespace(device_tensor_to_tensor=lambda _arg: object())
+        fake_task_interface = types.SimpleNamespace(device_tensor_to_chip_tensor=lambda _arg: object())
         monkeypatch.setitem(sys.modules, "pypto.runtime.device_runner", fake_device_runner)
         monkeypatch.setitem(sys.modules, "pypto.runtime.task_interface", fake_task_interface)
 
@@ -724,7 +724,10 @@ class TestExecuteOnDeviceDfxValidation:
         # patch the Worker plumbing to short-circuit after CallConfig setup.
         from pypto.runtime import device_runner  # noqa: PLC0415
 
-        with patch.object(device_runner, "Worker") as worker_cls:
+        with (
+            patch.object(device_runner, "Worker") as worker_cls,
+            patch("pypto.runtime.worker.to_worker_task_args", side_effect=lambda _worker, args: args),
+        ):
             worker = worker_cls.return_value
             # _PyptoWorker.current returns None → falls to the new-Worker path.
             # ``current`` lives on ``ChipWorker``, not the ABC base ``Worker``.

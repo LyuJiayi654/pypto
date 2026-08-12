@@ -8,8 +8,8 @@
 # -----------------------------------------------------------------------------------------------------------
 
 """Verify ``execute_compiled`` translates :class:`DeviceTensor` arguments to
-``Tensor.make(..., child_memory=True)`` while ``torch.Tensor``
-arguments still take the ordinary ``make_tensor_arg`` path.
+``ChipTensor.make(..., child_memory=True)`` while ``torch.Tensor``
+arguments still take the ordinary ``make_chip_tensor_arg`` path.
 """
 
 from unittest.mock import MagicMock, patch
@@ -42,7 +42,7 @@ def patched_runtime(tmp_path):
         "tensors": [],
         "scalars": [],
         "make_calls": [],  # Tensor.make kwargs
-        "make_tensor_arg_calls": [],
+        "make_chip_tensor_arg_calls": [],
     }
 
     chip_args = MagicMock(name="ChipStorageTaskArgs_instance")
@@ -67,9 +67,9 @@ def patched_runtime(tmp_path):
         )
         return MagicMock(name=f"Tensor(0x{data:x})")
 
-    def _make_tensor_arg(t):
-        captured["make_tensor_arg_calls"].append(t)
-        return MagicMock(name="Tensor(host)")
+    def _make_chip_tensor_arg(t):
+        captured["make_chip_tensor_arg_calls"].append(t)
+        return MagicMock(name="ChipTensor(host)")
 
     def _torch_dtype_to_datatype(dt):
         # Sentinel — not asserted on directly; child_memory and shape carry the signal.
@@ -83,9 +83,9 @@ def patched_runtime(tmp_path):
         ),
         patch("pypto.runtime.device_runner.execute_on_device"),
         patch("pypto.runtime.device_runner.ChipStorageTaskArgs", return_value=chip_args),
-        patch("pypto.runtime.device_runner.make_tensor_arg", side_effect=_make_tensor_arg),
+        patch("pypto.runtime.device_runner.make_chip_tensor_arg", side_effect=_make_chip_tensor_arg),
         patch("pypto.runtime.device_runner.scalar_to_uint64", side_effect=lambda s: int(s.value)),
-        patch("pypto.runtime.task_interface.Tensor.make", side_effect=_make),
+        patch("pypto.runtime.task_interface.ChipTensor.make", side_effect=_make),
         patch("pypto.runtime.task_interface.torch_dtype_to_datatype", side_effect=_torch_dtype_to_datatype),
     ):
         yield captured, tmp_path
@@ -107,7 +107,7 @@ class TestExecuteCompiledDeviceTensor:
         assert call["child_memory"] is True
         assert call["dtype"] == "<dtype:torch.float16>"
         # Host path was not used.
-        assert captured["make_tensor_arg_calls"] == []
+        assert captured["make_chip_tensor_arg_calls"] == []
 
     def test_torch_tensor_uses_make_tensor_arg_path(self, patched_runtime):
         captured, tmp = patched_runtime
@@ -119,7 +119,7 @@ class TestExecuteCompiledDeviceTensor:
 
         # Host tensor goes through make_tensor_arg, NOT through Tensor.make
         # (so child_memory cannot be True for it).
-        assert captured["make_tensor_arg_calls"] == [host]
+        assert captured["make_chip_tensor_arg_calls"] == [host]
         assert captured["make_calls"] == []
 
     def test_mixed_args_preserve_order(self, patched_runtime):
@@ -136,7 +136,7 @@ class TestExecuteCompiledDeviceTensor:
         # Only the device-tensor slot uses Tensor.make with child_memory=True.
         assert len(captured["make_calls"]) == 1
         assert captured["make_calls"][0]["child_memory"] is True
-        assert len(captured["make_tensor_arg_calls"]) == 2
+        assert len(captured["make_chip_tensor_arg_calls"]) == 2
 
     def test_unsupported_arg_raises(self, patched_runtime):
         _, tmp = patched_runtime

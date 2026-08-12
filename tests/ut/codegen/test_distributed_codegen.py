@@ -693,7 +693,7 @@ class TestSubWorkerSourceGeneration:
         source = _emit_sub_worker_module(verify_fn)
         param_name = verify_fn.params[0].name_hint
         assert f"def _user_verify({param_name}):" in source
-        assert f"{param_name} = _tensor_from_continuous(args.tensor(0))" in source
+        assert f"{param_name} = _tensor_from_continuous(args[0])" in source
         assert f"_user_verify({param_name})" in source
 
     def test_sub_worker_source_imports_torch(self):

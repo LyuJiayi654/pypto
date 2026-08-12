@@ -14,48 +14,64 @@ torch-aware helpers (make_tensor_arg, scalar_to_uint64) come from the
 ``simpler`` package installed via ``pip install simpler``.
 """
 
+from typing import Any
+
 from simpler.task_interface import (  # pyright: ignore[reportMissingImports]
     CallConfig,  # pyright: ignore[reportAttributeAccessIssue]
     ChipCallable,  # pyright: ignore[reportAttributeAccessIssue]
     ChipStorageTaskArgs,  # pyright: ignore[reportAttributeAccessIssue]
+    ChipTensor,  # pyright: ignore[reportAttributeAccessIssue]
     CoreCallable,  # pyright: ignore[reportAttributeAccessIssue]
     DataType,  # pyright: ignore[reportAttributeAccessIssue]
+    TaskArgs,  # pyright: ignore[reportAttributeAccessIssue]
     Tensor,  # pyright: ignore[reportAttributeAccessIssue]
+    get_element_size,  # pyright: ignore[reportAttributeAccessIssue]
     scalar_to_uint64,  # pyright: ignore[reportAttributeAccessIssue]
 )
 from simpler.worker import Worker  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
 from simpler_setup.torch_interop import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
+    make_chip_tensor_arg,
     make_tensor_arg,
-    torch_dtype_to_datatype,
+)
+from simpler_setup.torch_interop import (  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
+    torch_dtype_to_datatype as _torch_dtype_to_datatype,
 )
 
 from .device_tensor import DeviceTensor
 
 
-def device_tensor_to_tensor(dt: DeviceTensor) -> Tensor:
-    """Wrap a worker-resident :class:`DeviceTensor` as a simpler ``Tensor``.
+def torch_dtype_to_datatype(dtype: Any) -> Any:
+    """Convert a torch dtype to Simpler's runtime ``DataType`` enum."""
+    return _torch_dtype_to_datatype(dtype)
+
+
+def device_tensor_to_chip_tensor(dt: DeviceTensor) -> ChipTensor:
+    """Wrap a worker-resident :class:`DeviceTensor` as a simpler ``ChipTensor``.
 
     ``child_memory=True`` tells the runtime the buffer is already on the device,
-    so it skips the H2D/D2H copies — the buffer stays caller-managed. Shared by
-    the L2 (:func:`pypto.runtime.runner.execute_compiled`) and L3
-    (:func:`pypto.runtime.tensor_arg.make_tensor_arg`) calling conventions.
+    so it skips the H2D/D2H copies — the buffer stays caller-managed. Used by
+    the direct L2 :func:`pypto.runtime.runner.execute_compiled` path.
     """
     try:
         dt_enum = torch_dtype_to_datatype(dt.dtype)
     except KeyError as e:
         raise ValueError(f"Unsupported DeviceTensor dtype: {dt.dtype}") from e
-    return Tensor.make(data=dt.data_ptr, shapes=dt.shape, dtype=dt_enum, child_memory=True)
+    return ChipTensor.make(data=dt.data_ptr, shapes=dt.shape, dtype=dt_enum, child_memory=True)
 
 
 __all__ = [
     "CallConfig",
     "ChipCallable",
+    "ChipTensor",
     "ChipStorageTaskArgs",
     "CoreCallable",
     "DataType",
+    "TaskArgs",
     "Tensor",
     "Worker",
-    "device_tensor_to_tensor",
+    "device_tensor_to_chip_tensor",
+    "get_element_size",
+    "make_chip_tensor_arg",
     "make_tensor_arg",
     "scalar_to_uint64",
     "torch_dtype_to_datatype",
