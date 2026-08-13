@@ -2732,6 +2732,9 @@ class TestPersistentDistributedWorker:
         # The first request receives the freshly-zeroed allocation. The second
         # restores every named Buffer on both workers before dispatch.
         assert [dst.name for dst, _src in orch.copy_calls] == ["signal", "signal"]
+        assert orch.copy_calls[0][1] is orch.copy_calls[1][1]
+        m["worker"].create_buffer.assert_called_once_with(4)
+        m["worker"].release_buffer.assert_called_once_with(orch.copy_calls[0][1])
         # A retained domain survives both request run-fences and is released
         # once when the persistent worker closes.
         assert handle.release_count == 1

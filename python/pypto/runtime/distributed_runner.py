@@ -1505,6 +1505,7 @@ class DistributedWorker(Worker):
         self._persistent = bool(persistent)
         self._reset_persistent_windows = reset_persistent_windows
         self._persistent_zero = self._persistent and self._reset_persistent_windows
+        self._persistent_zero_buffers: dict[int, Any] = {}
         self._persistent_error: BaseException | None = None
         self._persistent_error_reported = False
         self._persistent_domains_by_program: dict[str, dict[str, tuple[tuple[Any, ...], Any]]] = {}
@@ -1804,12 +1805,26 @@ class DistributedWorker(Worker):
             for worker_id in handle.workers:
                 context = handle[worker_id]
                 for device_buffer in context.buffers.values():
-                    zero = self._w.create_buffer(int(device_buffer.nbytes))
-                    try:
+                    nbytes = int(device_buffer.nbytes)
+                    zero = self._persistent_zero_buffers.get(nbytes)
+                    if zero is None:
+                        zero = self._w.create_buffer(nbytes)
                         ctypes.memset(int(zero.base), 0, int(zero.nbytes))
-                        orch.copy_to(device_buffer, zero)
-                    finally:
-                        self._w.release_buffer(zero)
+                        self._persistent_zero_buffers[nbytes] = zero
+                    orch.copy_to(device_buffer, zero)
+
+    def _release_persistent_zero_buffers(self) -> None:
+        """Release reset staging buffers after no hierarchical run is active.
+
+        Releasing a host ``Buffer`` during graph construction waits for the
+        active run to retire, which cannot happen until graph construction
+        returns.  Keep one immutable zero buffer per size for the worker
+        lifetime and release it only from ``close()`` after dispatch drain.
+        """
+        buffers = tuple(self._persistent_zero_buffers.values())
+        self._persistent_zero_buffers.clear()
+        for buffer in buffers:
+            self._w.release_buffer(buffer)
 
     def _detach_persistent_domain(self, handle: Any) -> None:
         """Transfer one CommDomain from the current run to Worker ownership.
@@ -2517,6 +2532,20 @@ class DistributedWorker(Worker):
                 if first_error is None:
                     first_error = exc
 
+    def _release_local_runtime_resources(self, first_error: BaseException | None) -> BaseException | None:
+        """Release local staging buffers and owned tensors while Simpler is live."""
+        try:
+            self._release_persistent_zero_buffers()
+        except BaseException as exc:  # noqa: BLE001 - underlying worker still must close
+            first_error = self._remember_close_error(first_error, exc)
+
+        # DeviceTensor frees use the still-live simpler control path.
+        try:
+            self._close_owned_tensors()
+        except BaseException as exc:  # noqa: BLE001 - underlying worker still must close
+            first_error = self._remember_close_error(first_error, exc)
+        return first_error
+
     def close(self) -> None:
         """Release runtime resources, retrying incomplete Worker cleanup."""
         # Serialize the admission transition with submit() and prevent two
@@ -2551,11 +2580,7 @@ class DistributedWorker(Worker):
                     except BaseException as exc:  # noqa: BLE001 - preserve primary error and continue
                         first_error = self._remember_close_error(first_error, exc)
 
-                # DeviceTensor frees use the still-live simpler control path.
-                try:
-                    self._close_owned_tensors()
-                except BaseException as exc:  # noqa: BLE001 - underlying worker still must close
-                    first_error = self._remember_close_error(first_error, exc)
+                first_error = self._release_local_runtime_resources(first_error)
 
                 self._closed = True
                 for handle in list(self._handles):
@@ -2571,6 +2596,7 @@ class DistributedWorker(Worker):
                 self._inherited_host_tensors = ()
                 self._inherited_host_storage_ptrs.clear()
                 self._persistent_zero = None
+                self._persistent_zero_buffers.clear()
                 self._persistent_domains_by_program.clear()
                 if self._close_complete:
                     self._device_buffers.clear()
