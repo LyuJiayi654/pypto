@@ -142,10 +142,10 @@ class TestSwimlaneOutput:
         assert data.get("callable_id_to_name"), f"name_map {name_maps[0].name} has empty callable_id_to_name"
 
     def test_top_level_structure(self, swimlane_data: dict):
-        """Top-level 'l2_swimlane_level' and 'tasks' fields are present and valid."""
-        assert "l2_swimlane_level" in swimlane_data, "Missing top-level field: 'l2_swimlane_level'"
-        assert swimlane_data["l2_swimlane_level"] in (1, 2, 3, 4), (
-            f"Unexpected l2_swimlane_level: {swimlane_data['l2_swimlane_level']} (expected 1-4)"
+        """Top-level 'chip_swimlane_level' and 'tasks' fields are present and valid."""
+        assert "chip_swimlane_level" in swimlane_data, "Missing top-level field: 'chip_swimlane_level'"
+        assert swimlane_data["chip_swimlane_level"] in (1, 2, 3, 4), (
+            f"Unexpected chip_swimlane_level: {swimlane_data['chip_swimlane_level']} (expected 1-4)"
         )
         assert "tasks" in swimlane_data, "Missing top-level field: 'tasks'"
         assert len(swimlane_data["tasks"]) > 0, "tasks list is empty"

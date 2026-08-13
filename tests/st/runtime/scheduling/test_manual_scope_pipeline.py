@@ -966,10 +966,10 @@ class TestOriginalKVProjOuterParallelSwimlane:
         )
 
     def test_top_level_structure(self, original_kv_proj_swimlane_data: dict):
-        assert "l2_swimlane_level" in original_kv_proj_swimlane_data
-        assert original_kv_proj_swimlane_data["l2_swimlane_level"] in (1, 2, 3, 4), (
-            f"Unexpected l2_swimlane_level: "
-            f"{original_kv_proj_swimlane_data['l2_swimlane_level']} (expected 1-4)"
+        assert "chip_swimlane_level" in original_kv_proj_swimlane_data
+        assert original_kv_proj_swimlane_data["chip_swimlane_level"] in (1, 2, 3, 4), (
+            f"Unexpected chip_swimlane_level: "
+            f"{original_kv_proj_swimlane_data['chip_swimlane_level']} (expected 1-4)"
         )
         assert "tasks" in original_kv_proj_swimlane_data
         assert len(original_kv_proj_swimlane_data["tasks"]) > 0

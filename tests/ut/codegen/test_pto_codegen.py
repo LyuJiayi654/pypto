@@ -1664,6 +1664,43 @@ class TestGenerateKernelWrapper:
             "    pypto_runtime_subblock_id = get_sub_block_id(args);"
         ) in wrapper
 
+    def test_split_aiv_wrapper_uses_cpu_subblock_adapter_on_a5(self):
+        backend.reset_for_testing()
+        backend.set_backend_type(BackendType.Ascend950)
+
+        @pl.program
+        class SplitWrapperProgram:
+            @pl.function(type=pl.FunctionType.AIV, attrs={"split": pl.SplitMode.UP_DOWN})
+            def split_vec(
+                self,
+                out: pl.Out[pl.Tensor[[16, 16], pl.FP32]],
+            ) -> pl.Tensor[[16, 16], pl.FP32]:
+                pipe_buf = pl.reserve_buffer(name="c2v_slot_buffer", size=4096, base=0x1000)
+                pl.aiv_initialize_pipe(dir_mask=1, slot_size=512, c2v_consumer_buf=pipe_buf)
+                z_vec: pl.Tile[[16, 16], pl.FP32, pl.MemorySpace.Vec, pl.TileView()] = pl.tpop_from_aic(
+                    split=1
+                )
+                scaled: pl.Tile[[16, 16], pl.FP32, pl.MemorySpace.Vec] = pl.tile.muls(z_vec, 2.0)
+                pl.tfree_to_aic(z_vec)
+                updated: pl.Tensor[[16, 16], pl.FP32] = pl.store(scaled, [0, 0], out)
+                return updated
+
+        transformed = _run_default_passes(SplitWrapperProgram)
+        func = transformed.get_function("split_vec")
+        assert func is not None
+
+        mlir = _generate_mlir(transformed)
+        assert "aiv_subblockid(" in mlir
+
+        wrapper = _generate_kernel_wrapper(func, SAMPLE_PTOAS_OUTPUT)
+        assert "static thread_local uint32_t pypto_runtime_subblock_id;" in wrapper
+        assert "pto::cpu_sim::injected_subblock_id_hook = &pypto_runtime_get_subblock_id;" in wrapper
+        assert "PTO_INTERNAL void TPUSH_IMPL(Pipe& pipe, TileProd& tile, int32_t subblock_id)" in wrapper
+        assert "PTO_INTERNAL void TPOP_IMPL(Pipe& pipe, TileCons& tile, int32_t subblock_id)" in wrapper
+        assert "[[block_local]] static int32_t pypto_runtime_subblock_id;" not in wrapper
+        assert "#define get_subblockid() pypto_runtime_subblock_id" not in wrapper
+        assert "#else\n    // Read A2A3 mixed-task subblock id" not in wrapper
+
     def test_no_split_dual_dispatch_wrapper_uses_runtime_subblock_bridge_on_a2a3(self):
         @pl.program
         class NoSplitDualDispatchProgram:

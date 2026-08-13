@@ -613,11 +613,16 @@ def _uses_spmd_block_ops(func: _ir_core.Function) -> bool:
 
 def _needs_runtime_subblock_bridge(func: _ir_core.Function) -> bool:
     """Return whether A2A3 split AIV wrappers must source subblock id from runtime context."""
+    if not _needs_cpu_sim_subblock_adapter(func):
+        return False
+    return _backend_core.get_handler().requires_runtime_subblock_bridge()
+
+
+def _needs_cpu_sim_subblock_adapter(func: _ir_core.Function) -> bool:
+    """Return whether explicit-lane TPUSH/TPOP need PTO-ISA CPU adapters."""
     if not _requires_dual_aiv_dispatch(func):
         return False
     if _codegen_core.infer_function_core_type(func) != _ir_core.CoreType.VECTOR:
-        return False
-    if not _backend_core.get_handler().requires_runtime_subblock_bridge():
         return False
     return _uses_dynamic_subblock_id(func)
 
@@ -670,7 +675,7 @@ def _generate_kernel_header(
         uses_sdma = _uses_sdma_workspace(func)
     needs_intrinsic = uses_spmd or uses_subblock or uses_sdma
     spmd_override = '#include "intrinsic.h"\n' if needs_intrinsic else ""
-    if _needs_runtime_subblock_bridge(func):
+    if _needs_cpu_sim_subblock_adapter(func):
         spmd_override += textwrap.dedent(
             """\
             #if defined(__CPU_SIM)
@@ -687,7 +692,8 @@ def _generate_kernel_header(
 
             // The runtime-pinned PTO-ISA exposes explicit-lane TPUSH/TPOP on
             // hardware but not in its CPU implementation. Supply the missing
-            // adapters so simulator builds exercise the same frontend form.
+            // adapters so A2A3 and A5 simulator builds exercise the same
+            // frontend form.
             // Its generic V2C GM left-right path also packs each lane as a
             // contiguous tile; preserve the required interleaved row stride.
             template <typename Pipe, typename TileProd, TileSplitAxis Split>
@@ -771,7 +777,7 @@ def _generate_kernel_wrapper(
     ptoas_body = _preprocess_ptoas_output(ptoas_code)
     unpacking_code, var_names = _generate_arg_unpacking(func, uses_spmd=uses_spmd)
     runtime_subblock_setup = ""
-    if _needs_runtime_subblock_bridge(func):
+    if _needs_cpu_sim_subblock_adapter(func):
         runtime_subblock_setup = (
             "#if defined(__CPU_SIM)\n"
             "    pypto_runtime_subblock_id = static_cast<uint32_t>(get_sub_block_id(args));\n"
@@ -780,11 +786,14 @@ def _generate_kernel_wrapper(
             "        return true;\n"
             "    }();\n"
             "    (void)pypto_runtime_subblock_hook_installed;\n"
-            "#else\n"
-            "    // Read A2A3 mixed-task subblock id from runtime dispatch context\n"
-            "    pypto_runtime_subblock_id = get_sub_block_id(args);\n"
-            "#endif\n\n"
         )
+        if _needs_runtime_subblock_bridge(func):
+            runtime_subblock_setup += (
+                "#else\n"
+                "    // Read A2A3 mixed-task subblock id from runtime dispatch context\n"
+                "    pypto_runtime_subblock_id = get_sub_block_id(args);\n"
+            )
+        runtime_subblock_setup += "#endif\n\n"
 
     # Resolve SPMD block identity once from intrinsic.h::get_block_idx(args) /
     # get_block_num(args). Locals are declared whenever any function in the
