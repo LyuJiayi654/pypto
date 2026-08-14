@@ -184,6 +184,16 @@ nav:
           - en/user/tutorials/03-mixed-kernel.md
           - en/user/tutorials/04-task-graph.md
           - en/user/tutorials/05-scheduling-tuning.md
+      - Performance:
+          - en/user/performance/index.md
+          - en/user/performance/00-methodology.md
+          - en/user/performance/01-single-node.md
+          - en/user/performance/02-distributed.md
+          - en/user/performance/03-cases.md
+      - Precision:
+          - en/user/precision/index.md
+          - en/user/precision/00-workflow.md
+          - en/user/precision/01-cases.md
       - Tasks and Ordering:
           - en/user/tasks/index.md
           - en/user/tasks/00-model.md
