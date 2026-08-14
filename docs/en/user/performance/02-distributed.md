@@ -60,11 +60,15 @@ needs a constant number of windows, paying in steps what it saves in memory.
 - **When `"ring"` applies:** many ranks, or window memory is the constraint.
 - **Cost:** `2(P−1)` sequential steps — more latency-sensitive, and worse for small payloads
   where the step count dominates the bytes moved.
-- **How to enable:** `mode="ring"` at the collective — but you cannot just add that one
-  argument to an existing call. The host-orchestrator form that omits `signal` is sugar for a
-  compiler-synthesized signal, and that synthesis is **mesh only**, so moving to `ring` means
-  passing a signal explicitly. Copy the exact form from
-  [Collectives](../distributed/01-collectives.md).
+- **How to enable:** `mode="ring"` at the collective — but that one argument is never the
+  whole edit. Signal synthesis (what makes the host form's omitted `signal` work) is
+  **mesh only**, and `LowerHostTensorCollectives` additionally requires, for `NR` ranks:
+  - an explicit window-bound **INT32** signal of rank 2, shaped `[2*(NR-1) + 1, NR]`;
+  - a **statically-known** `src` shape — dynamic host-ring extents are rejected;
+  - `numel(src)` an exact multiple of `NR`, since the schedule cuts it into `NR` chunks.
+
+  Each is a compile-time error with a message naming the constraint, so a wrong switch
+  fails loudly rather than silently. See [Collectives](../distributed/01-collectives.md).
 - **How to confirm:** `per_round("device")` for the total, `per_rank` to check the change
   did not just move the cost onto one rank.
 

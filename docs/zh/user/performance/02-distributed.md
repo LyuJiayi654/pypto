@@ -43,7 +43,12 @@
 
 - **何时用 `"ring"`：** rank 很多，或者窗口内存是约束。
 - **代价：** `2(P−1)` 个顺序步骤 —— 对延迟更敏感，且在小载荷下更差，因为那时步数比搬运的字节更主导。
-- **怎么开：** 在 collective 上写 `mode="ring"` —— 但不能只往已有调用上加这一个参数。省略 `signal` 的 host 编排形式是语法糖，编译器会替你合成一个 signal，而那个合成**仅限 mesh**；换到 `ring` 就意味着要显式传入 signal。完整形式请从 [集合通信](../distributed/01-collectives.md) 照抄。
+- **怎么开：** 在 collective 上写 `mode="ring"` —— 但改动从来不止这一个参数。signal 合成（host 形式能省略 `signal` 就靠它）**仅限 mesh**；而且对 `NR` 个 rank，`LowerHostTensorCollectives` 还要求：
+  - 一个显式的、绑定 window 的 **INT32** signal，秩为 2，形状 `[2*(NR-1) + 1, NR]`；
+  - `src` 形状**静态可知** —— 动态的 host-ring extent 会被拒绝；
+  - `numel(src)` 是 `NR` 的整数倍，因为该调度会把它切成 `NR` 块。
+
+  这三条都是编译期错误，报错信息会点名是哪一条，所以切错了会明确失败而不是悄悄错。参见 [集合通信](../distributed/01-collectives.md)。
 - **怎么确认：** `per_round("device")` 看总量，`per_rank` 确认这个改动不是把开销挪到了某一个 rank 上。
 
 ## 让通信与计算重叠
