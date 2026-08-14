@@ -6,7 +6,7 @@
 
 ## 怎么读一个条目
 
-下面每种手段都带上一页那四栏。**「怎么确认」不是可选项**——一个你在五个工具里都看不见的改动，是一个你无法辩护的改动，也会是别人第一个删掉的东西。
+下面每种手段都带上一页那四栏。**「怎么确认」不是可选项**——一个你在那些工具里都看不见的改动，是一个你无法辩护的改动，也会是别人第一个删掉的东西。
 
 ## 切分与并行
 
@@ -32,7 +32,7 @@
 | `pl.unroll` | 逐迭代开销占主导的短循环 |
 | `pl.cross_core_slot(slot_num=N)` | 给 cube↔vector 的环定尺寸 |
 
-**`pl.pipeline`** —— *代价：* 缓冲区翻倍。重叠 N 个阶段意味着被搬运的 tile 有 N 份同时存活。*确认：* [memory map](00-methodology.md) 里会看到多出来的那几份；如果分配没变大，说明流水没生效。
+**`pl.pipeline`** —— *代价：* 缓冲区按阶段数增加。重叠 N 个阶段意味着被搬运的 tile 有 N 份同时存活。*确认：* [memory map](00-methodology.md) 里会看到多出来的那几份；如果分配没变大，说明流水没生效。
 
 **`pl.cross_core_slot(slot_num=N)`** —— *代价与收益是同一件事：* 更深的环让生产者在阻塞前跑得更靠前，代价是 `N × tile` 的 vector 缓冲区。默认是 8 槽，对 `[128, 128]` FP32 的 tile 就是 512 KB，而预算约 184 KB —— 所以在真实形状上这个参数通常是往**小**调而不是往大调。**在装得下的前提下选最大的深度。** *确认：* 首先是能编译通过；然后看 swimlane，判断生产者是否仍在卡。
 
@@ -57,7 +57,7 @@
 | `memory_planner=` | 在 PyPTO 的规划器与 PTOAS 的之间做选择 |
 | 数据常驻 | 同一批权重跨多次启动使用 |
 
-**`memory_planner=PTOAS`** 把分配交给 PTOAS，跳过 PyPTO 的 `MemoryReuse` 与 `AllocateMemoryAddr`。*代价：* 不同的失效模式和另一组规划器缺陷；语义必需的 alias 两条路都照跑。*确认：* 改前改后各看一次 memory map —— 这个改动动的正是分配，而那正是该工具画出来的东西。
+**`memory_planner=PTOAS`** 把分配交给 PTOAS，跳过 PyPTO 的 `MemoryReuse` 与 `AllocateMemoryAddr`。*代价：* 不同的失效模式和另一组规划器缺陷；语义必需的 alias 两条路都照跑。*确认：* **不要**用 memory map —— PTOAS 下编译器跳过 `AllocateMemoryAddr`，pass dump 里没有已分配的偏移可供该工具绘制。改用端到端对比：benchmark 树，以及在另一个规划器拒绝的形状上它能否编译通过。
 
 **数据常驻** —— `pypto.runtime.DeviceTensor` 让张量跨启动留在设备上，省掉每次调用的一次 H2D 拷贝。*何时：* 权重、KV cache，任何内容比单次启动活得久的东西。*确认：* benchmark 树里的 **host** span 变小；device span 不应移动。
 

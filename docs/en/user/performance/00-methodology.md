@@ -30,9 +30,10 @@ Work down the list, and stop at the first step that explains the gap.
 | 1 | Code patterns | Automatic during `compile()` / `@pl.jit` | `<output_dir>/report/perf_hints.log` |
 | 2 | End-to-end segments | `pypto.runtime.benchmark` | `stats.print_mean_tree(...)` |
 | 3 | One kernel, cycle level | Ascend op-simulator (`msprof`) | Insight trace |
-| 4 | On-chip buffers | `python -m pypto.tools.memory_map <dump>` | HTML |
+| 4 | On-chip buffers | `python -m pypto.tools.memory_map DUMP.py` | HTML |
 | 4 | Runtime ring levels | `RunConfig(enable_scope_stats=True)` | `dfx_outputs/scope_stats/scope_stats.jsonl` |
-| 5 | Task graph, concurrency | `RunConfig(enable_dep_gen / enable_l2_swimlane / enable_pmu)` | `dfx_outputs/*` |
+| 3 | Per-pipe utilisation | `RunConfig(enable_pmu=2)` | `dfx_outputs/pmu.csv` |
+| 5 | Task graph, concurrency | `RunConfig(enable_dep_gen / enable_l2_swimlane)` | `dfx_outputs/*` |
 
 ## Step 1: read what the compiler already told you
 
@@ -96,11 +97,15 @@ across, lifetime down, with the IR alongside. Its input is a **pass dump**, not 
 ask for one at compile time first:
 
 ```python
-prog = kernel.lower(*args, dump_passes=ir.PassDumpLevel.EXPLICIT)
+from pypto.ir import PassDumpLevel
+from pypto.runtime import RunConfig
+
+prog = kernel.lower(*args, config=RunConfig(dump_passes=PassDumpLevel.EXPLICIT))
 ```
 
 ```bash
-python -m pypto.tools.memory_map <output_dir>/passes_dump/NN_after_<Pass>.py -o map.html
+DUMP=path/to/output_dir/passes_dump/NN_after_SomePass.py
+python -m pypto.tools.memory_map "$DUMP" -o map.html
 ```
 
 Read it for tiles alive longer than they need to be, and for the headroom that decides
@@ -131,7 +136,7 @@ speedup with an unstated cost is not a result:
 | **When it applies** | The shape or pattern that has to hold |
 | **Cost** | What you give up — determinism, memory, readability, portability |
 | **How to enable** | The exact flag, keyword, or rewrite |
-| **How to confirm** | Which of the five tools shows it worked |
+| **How to confirm** | Which of the tools above shows it worked |
 
 The fourth is the one people skip. A change that cannot be confirmed by one of the tools
 above is a guess, and guesses accumulate.

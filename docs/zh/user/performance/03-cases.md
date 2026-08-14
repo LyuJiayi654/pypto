@@ -79,7 +79,7 @@
 
 **定位。** 默认的 `mode="mesh"` 需要 **O(P)** 个窗口 —— 直接交换，每个对端一个窗口。
 
-**改动。** `mode="ring"`：分块 reduce-scatter + allgather，**O(1)** 个窗口。
+**改动。** `mode="ring"`：分块 reduce-scatter + allgather，**O(1)** 个窗口。这不是加一个参数就完事 —— 调用还需要什么见 [分布式](02-distributed.md)。
 
 **确认。** 能分配出来了。然后看 `per_round` —— `ring` 要付 `2(P−1)` 个顺序步骤，所以在 rank 少或载荷小时它可能比被它替换掉的 `mesh` 更慢。要测，不要假设。
 

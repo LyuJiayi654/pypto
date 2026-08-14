@@ -10,7 +10,7 @@ that matters — how to confirm it did anything.
 ## How to read an entry
 
 Every technique below carries the four fields from the previous page. **How to confirm** is
-not optional — a change you cannot see in one of the five tools is a change you cannot
+not optional — a change you cannot see in one of those tools is a change you cannot
 defend, and it will be the first thing someone deletes.
 
 ## Splitting and parallelism
@@ -84,8 +84,10 @@ show the K-slices as siblings; and check the tolerance your test uses still hold
 
 **`memory_planner=PTOAS`** hands allocation to PTOAS, which skips PyPTO's `MemoryReuse` and
 `AllocateMemoryAddr`. *Cost:* different failure modes and a different set of planner bugs;
-the semantics-required aliases still run either way. *Confirm:* the memory map, before and
-after — this changes the allocation, which is exactly what that tool draws.
+the semantics-required aliases still run either way. *Confirm:* **not** with the memory map — PTOAS
+skips `AllocateMemoryAddr`, so the pass dump carries no assigned offsets for that tool to
+draw. Compare end to end instead: the benchmark tree, plus whether it compiles at all on
+shapes the other planner rejected.
 
 **Data residency** — `pypto.runtime.DeviceTensor` keeps a tensor on the device across
 launches, removing a host-to-device copy per call. *When:* weights, KV caches, anything

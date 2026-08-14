@@ -18,7 +18,7 @@ changes.
 
 | Page | Covers |
 | ---- | ------ |
-| [The measurement loop](00-methodology.md) | Five questions, six tools, and why the order matters |
+| [The measurement loop](00-methodology.md) | Five questions, their tools, and why the order matters |
 | [Single-node techniques](01-single-node.md) | Splitting, pipelining, the matmul path, memory, scheduling |
 | [Distributed performance](02-distributed.md) | Rank skew, collective algorithms, overlap, residency |
 | [Worked cases](03-cases.md) | The loop applied end to end |
@@ -47,8 +47,8 @@ compiler already flagged.
 your shapes, your platform, and the version you are on — it would be wrong by the time you
 read it, and wrong in a way that is hard to notice.
 
-What every technique does carry is **how to confirm it**: which of the six tools shows the
-change took effect. That is the durable half. A speedup you cannot see in a tool is a
+What every technique does carry is **how to confirm it**: which tool shows the change took
+effect. That is the durable half. A speedup you cannot see in a tool is a
 speedup you cannot defend when someone deletes it six months from now.
 
 ## See Also

@@ -102,7 +102,8 @@ uneven sharding, a rank doing extra host work, or arriving late.
 **Located by.** The default `mode="mesh"` needs **O(P)** windows — direct exchange with a
 window per peer.
 
-**Change.** `mode="ring"`: chunked reduce-scatter + allgather, **O(1)** windows.
+**Change.** `mode="ring"`: chunked reduce-scatter + allgather, **O(1)** windows. Not a
+one-argument edit — see [Distributed](02-distributed.md) for what else the call needs.
 
 **Confirmed by.** It allocates. Then `per_round` — `ring` pays `2(P−1)` sequential steps, so
 for few ranks or small payloads it can be slower than the `mesh` it replaced. Check rather

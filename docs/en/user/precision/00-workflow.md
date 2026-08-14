@@ -55,10 +55,19 @@ bisecting anything.
 | Multi-hop cast | **Usually none** — see below | `LegalizeTileCast` expands what the ISA cannot do in one step |
 
 **The multi-hop cast is worth stating precisely, because it is easy to blame.** On A5,
-`INT32→FP16` is expanded to `INT32→FP32→FP16`. That chain is **bit-identical** to a direct
-conversion: FP16 saturates above 65504, every integer below that is exact in FP32, so the
-FP32 hop never rounds and only the final hop does. A chain only introduces a difference when
-an intermediate cannot represent the in-range source values exactly. Check
+`INT32→FP16` is expanded to `INT32→FP32→FP16`. That chain is **bit-identical** to the
+reference it is standing in for — a hypothetical single-step `INT32→FP16` under the same
+rounding mode and the same overflow behaviour. The argument has two halves:
+
+- **`|x| ≤ 65504`** (representable range of FP16): such an `x` is well under `2^24`, so it is
+  exact in FP32. The FP32 hop does not round, and the single rounding that occurs is the
+  final hop — the same rounding the one-step reference would perform.
+- **`|x| > 65504`**: both the chain and the one-step reference overflow FP16 and produce the
+  same saturated result. The FP32 hop *does* round for `|x| > 2^24`, but only among values
+  that are already far outside FP16's range, so that rounding cannot change the outcome.
+
+A chain introduces a real difference only when an intermediate type cannot exactly represent
+source values that *are* in the destination's range. Check
 [LegalizeTileCast](../../dev/passes/14-legalize_tile_cast.md) for the class your chain falls
 into rather than assuming the hop is the culprit.
 

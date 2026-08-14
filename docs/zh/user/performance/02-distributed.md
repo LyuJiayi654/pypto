@@ -18,13 +18,15 @@
 | ---- | ---- | ---- |
 | `per_round(metric)` | 每轮一个值 | 整个系统变快了吗？ |
 | `per_rank(metric)` | 每个 rank → 一组值 | 是不是某个 rank 一直更慢？ |
-| `per_dispatch(metric)` | 每个 (rank, round) | 具体是哪一次启动是离群点？ |
+| `per_dispatch(metric)` | `{(pid, slot): [round0, ...]}` | 哪个派发槽位是离群点？ |
 
 每个都接受 `metric` = `"device"` / `"host"` / `"effective"`：
 
 - **`device`** —— 该次派发的设备挂钟时间。
 - **`host`** —— 主机挂钟时间。与 `device` 对比可以找出派发开销。
 - **`effective`** —— device 域中 `orch` 与 `sched` 两个 span 的**并集**，即运行时的 "Effective" 指标。两个 span 共享本次调用的设备时钟原点，所以这个并集在一次派发内是有意义的。在 `*sim` 平台与非 profiling 构建上它返回 `0.0` —— 这里的 0.0 意思是「没采集」，不是「瞬间完成」。
+
+`per_dispatch` 的键是一轮之内的派发**槽位**而不是轮次 —— 所以同一个 rank 的重复派发或异构派发彼此分开。配合 `dispatch_tasks()` 给槽位贴标签。它**仅限 L3**：在 L2 上返回 `{}`。
 
 **先看 `per_rank`。** 如果各 rank 很齐，那 `per_round` 才是该优化的数字。如果不齐，那么在偏斜被搞清楚之前，任何 collective 调优都不重要 —— 你优化的会是等待，而不是工作。
 
@@ -41,7 +43,7 @@
 
 - **何时用 `"ring"`：** rank 很多，或者窗口内存是约束。
 - **代价：** `2(P−1)` 个顺序步骤 —— 对延迟更敏感，且在小载荷下更差，因为那时步数比搬运的字节更主导。
-- **怎么开：** 在 collective 上写 `mode="ring"`。
+- **怎么开：** 在 collective 上写 `mode="ring"` —— 但不能只往已有调用上加这一个参数。省略 `signal` 的 host 编排形式是语法糖，编译器会替你合成一个 signal，而那个合成**仅限 mesh**；换到 `ring` 就意味着要显式传入 signal。完整形式请从 [集合通信](../distributed/01-collectives.md) 照抄。
 - **怎么确认：** `per_round("device")` 看总量，`per_rank` 确认这个改动不是把开销挪到了某一个 rank 上。
 
 ## 让通信与计算重叠

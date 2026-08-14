@@ -25,7 +25,7 @@ gets missed:
 | ------ | ------- | ------- |
 | `per_round(metric)` | One value per round | Did the whole system get faster? |
 | `per_rank(metric)` | Per rank → list of values | Is one rank consistently slower? |
-| `per_dispatch(metric)` | Per (rank, round) | Which specific launch was the outlier? |
+| `per_dispatch(metric)` | `{(pid, slot): [round0, ...]}` | Which dispatch slot was the outlier? |
 
 Each takes `metric` = `"device"`, `"host"`, or `"effective"`:
 
@@ -35,6 +35,10 @@ Each takes `metric` = `"device"`, `"host"`, or `"effective"`:
   runtime's "Effective" figure. Both spans share the invocation's device-clock origin, so
   the union is meaningful within a dispatch. It returns `0.0` on `*sim` platforms and
   non-profiling builds — a zero here means "not collected", not "instant".
+
+`per_dispatch` keys on the dispatch *slot* within a round, not the round — so a rank's
+repeated or heterogeneous dispatches stay separate. Pair it with `dispatch_tasks()` to
+label the slots. It is **L3 only**: on L2 it returns `{}`.
 
 **Start with `per_rank`.** If the ranks are tight, `per_round` is the number to optimise. If
 they are not, no collective tuning matters until the skew is understood — you would be
@@ -56,7 +60,11 @@ needs a constant number of windows, paying in steps what it saves in memory.
 - **When `"ring"` applies:** many ranks, or window memory is the constraint.
 - **Cost:** `2(P−1)` sequential steps — more latency-sensitive, and worse for small payloads
   where the step count dominates the bytes moved.
-- **How to enable:** `mode="ring"` at the collective.
+- **How to enable:** `mode="ring"` at the collective — but you cannot just add that one
+  argument to an existing call. The host-orchestrator form that omits `signal` is sugar for a
+  compiler-synthesized signal, and that synthesis is **mesh only**, so moving to `ring` means
+  passing a signal explicitly. Copy the exact form from
+  [Collectives](../distributed/01-collectives.md).
 - **How to confirm:** `per_round("device")` for the total, `per_rank` to check the change
   did not just move the cost onto one rank.
 

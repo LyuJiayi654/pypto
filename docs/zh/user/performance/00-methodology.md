@@ -26,9 +26,10 @@
 | 1 | 代码模式 | `compile()` / `@pl.jit` 期间自动 | `<output_dir>/report/perf_hints.log` |
 | 2 | 端到端分段 | `pypto.runtime.benchmark` | `stats.print_mean_tree(...)` |
 | 3 | 单 kernel，cycle 级 | Ascend op-simulator（`msprof`） | Insight trace |
-| 4 | 片上缓冲区 | `python -m pypto.tools.memory_map <dump>` | HTML |
+| 4 | 片上缓冲区 | `python -m pypto.tools.memory_map DUMP.py` | HTML |
 | 4 | 运行时环水位 | `RunConfig(enable_scope_stats=True)` | `dfx_outputs/scope_stats/scope_stats.jsonl` |
-| 5 | 任务图、并发 | `RunConfig(enable_dep_gen / enable_l2_swimlane / enable_pmu)` | `dfx_outputs/*` |
+| 3 | 逐 pipe 利用率 | `RunConfig(enable_pmu=2)` | `dfx_outputs/pmu.csv` |
+| 5 | 任务图、并发 | `RunConfig(enable_dep_gen / enable_l2_swimlane)` | `dfx_outputs/*` |
 
 ## 第 1 步：先看编译器已经说过什么
 
@@ -75,11 +76,15 @@ stats.print_mean_tree(spread="stdev")
 **片上缓冲区** —— `pypto.tools.memory_map` 把分配渲染成 HTML：横轴地址、纵轴生命期，旁边并排 IR。它的输入是 **pass dump** 而不是一次运行，所以先在编译期要一份：
 
 ```python
-prog = kernel.lower(*args, dump_passes=ir.PassDumpLevel.EXPLICIT)
+from pypto.ir import PassDumpLevel
+from pypto.runtime import RunConfig
+
+prog = kernel.lower(*args, config=RunConfig(dump_passes=PassDumpLevel.EXPLICIT))
 ```
 
 ```bash
-python -m pypto.tools.memory_map <output_dir>/passes_dump/NN_after_<Pass>.py -o map.html
+DUMP=path/to/output_dir/passes_dump/NN_after_SomePass.py
+python -m pypto.tools.memory_map "$DUMP" -o map.html
 ```
 
 读它是为了找出活得比需要更久的 tile，以及那些决定「更深的流水或更深的跨核环装不装得下」的余量。
@@ -101,7 +106,7 @@ python -m pypto.tools.memory_map <output_dir>/passes_dump/NN_after_<Pass>.py -o 
 | **适用场景** | 必须成立的形状或模式 |
 | **代价** | 你放弃了什么 —— 确定性、内存、可读性、可移植性 |
 | **怎么开** | 确切的开关、关键字或改写 |
-| **怎么确认生效** | 上面五个工具中的哪一个能看出来 |
+| **怎么确认生效** | 上面那些工具中的哪一个能看出来 |
 
 第四栏是最常被跳过的那一栏。一个无法用上述工具确认的改动就是一次猜测，而猜测会累积。
 
