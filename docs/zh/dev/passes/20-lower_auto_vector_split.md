@@ -212,8 +212,8 @@ core affinity）同样会落到 cube lane 上，而它可能在向量 lane 的 T
 把重组后的 tile 交给 cube。
 
 ```python
-with pl.at(level=pl.Level.CORE_GROUP, name_hint="sparse_kv", allow_early_resolve=True,
-           optimizations=[pl.cross_core_slot(slot_num=2)]):     # see the ring note below
+with pl.at(level=pl.Level.CORE_GROUP, name_hint="sparse_kv",
+           allow_early_resolve=True):                           # see the ring note below
     for aiv in pl.split_aiv(2, mode=pl.SplitMode.UP_DOWN):
         ub = pl.full([64, 512], dtype=pl.BF16, value=0.0)       # per-lane HALF extent
         for k in pl.range(64):
@@ -229,12 +229,11 @@ with pl.at(level=pl.Level.CORE_GROUP, name_hint="sparse_kv", allow_early_resolve
   本身不会加入 half-width 数据流。gather 是凭其由 lane 派生的 `src_offset` 被接受的；该校验
   证明的是**意图**而非**范围**，所以此处若写成全 extent 的累加器，gather 回来就会变成
   `2 x FULL` 并在下游产生形状不匹配。
-- **设置跨核 ring 的大小。** V2C ring 会在消费侧核的内存中预留 `slot_size x slot_num` 字节
+- **留意跨核 ring 的开销。** V2C ring 会在消费侧核的内存中预留 `slot_size x slot_num` 字节
   （V2C 为 L1，C2V 为 UB），其中 `slot_size` 是消费方弹出的**完整** tile——此处为
-  `128 x 512 x 2 = 131072`——而 `slot_num` 对单向流水默认取 **8**，相当于在 512 KB 的 L1 中
-  占用 1 MB，故默认深度无法表达这种形状；用 `pl.cross_core_slot(slot_num=N)` 调低即可，每次
-  调用只 push 一次的 kernel 至多需要 2。若省略，`AllocateMemoryAddr` 会报告溢出并指出被预留
-  的字节数。
+  `128 x 512 x 2 = 131072`——而 `slot_num` 默认取 **2**，相当于在 512 KB 的 L1 中占用
+  256 KB；每次调用只 push 一次的 kernel 无需超过该深度。`pl.cross_core_slot(slot_num=N)`
+  可双向调整该值；若调得过大，`AllocateMemoryAddr` 会报告溢出并指出被预留的字节数。
 
 `pl.aiv_shard` 在这里**不能**替代半 extent 的 `pl.full`：它是 C→V 传输，要求操作数位于
 `Acc`（cube 产出），因此无法对 vector lane 自己产生的值做切分。

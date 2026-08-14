@@ -140,7 +140,7 @@ Setup is derived from the split bodies:
 - `dir_mask`: `C2V=1`, `V2C=2`, bidirectional=`3`
 - `id`: omitted for automatic setup, so PTOAS uses the default frontend pipe id `0`
 - `slot_size`: max tile byte size across all directions (`shape * dtype bits / 8`)
-- `slot_num`: ring depth — `8` for unidirectional, `4` per direction for bidirectional by default; overridable per scope (see below)
+- `slot_num`: ring depth — `2` by default, in every direction; always emitted explicitly; overridable per scope (see below)
 - `buffer_size`: `slot_num * slot_size`
 - buffer names: `<func>_c2v_slot_buffer` / `<func>_v2c_slot_buffer`
 - reserve-buffer base: `AUTO` on insertion, then resolved to an explicit address by `AllocateMemoryAddr`
@@ -149,12 +149,12 @@ When cross-core directions use different tile sizes, the pass picks `max(all obs
 
 ### Overriding the slot count (`slot_num`)
 
-The default slot count (8 / 4) can be tuned per scope with the
-`pl.cross_core_slot(slot_num=N)` optimization entry:
+The default slot count (`cross_core_pipe::kDefaultAutoPipeSlotNum` = 2) can be
+tuned per scope with the `pl.cross_core_slot(slot_num=N)` optimization entry:
 
 ```python
-# Shrink the auto-inserted ring to free buffer space for a larger vector tile
-# (e.g. grow the vec tile past the default-8-slot ceiling).
+# Deepen the auto-inserted ring so the cube can run further ahead of the vector
+# core, at the cost of consumer-side buffer space.
 with pl.spmd(4, optimizations=[pl.cross_core_slot(slot_num=4)]):
     ...
 
@@ -167,9 +167,13 @@ with pl.at(level=pl.Level.CORE_GROUP,
 
 The value is carried as the `slot_num` scope attr, propagated by
 `OutlineIncoreScopes` to the outlined function's `slot_num` attr, and read here.
-When set it drives **both** the reserved buffer (`slot_size * slot_num`) and the
-emitted `initialize_pipe` `slot_num` attribute, so PTOAS and the auto-reserved
-buffer stay consistent. Omitting the entry keeps the PTOAS-derived default.
+It drives **both** the reserved buffer (`slot_size * slot_num`) and the emitted
+`initialize_pipe` `slot_num` attribute, so PTOAS and the auto-reserved buffer
+stay consistent. Automatic setup **always** emits the attribute, whether or not
+the scope overrides it: PTOAS derives its own depth from `dir_mask` (8
+unidirectional, 4 bidirectional) when the clause is absent, which would index
+past a buffer reserved for a shallower ring. Only hand-written
+`pl.system.{aic,aiv}_initialize_pipe` still reaches that fallback.
 `slot_num` must be positive and is **orthogonal to splitting** — it sizes a data
 channel, it does not partition work. It applies in whichever directions the
 scope actually uses (cube->vector, vector->cube, or both), and to any scope that

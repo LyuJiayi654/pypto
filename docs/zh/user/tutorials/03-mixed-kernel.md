@@ -40,7 +40,7 @@ def mixed(
 ):
     with pl.at(
         level=pl.Level.CORE_GROUP,
-        optimizations=[pl.split(pl.SplitMode.UP_DOWN), pl.cross_core_slot(slot_num=2)],
+        optimizations=[pl.split(pl.SplitMode.UP_DOWN)],
         name_hint="mixed",
     ):
         acc = pl.matmul(a, b, out_dtype=pl.FP32)                 # cube (AIC)
@@ -66,30 +66,38 @@ assert torch.allclose(out, a.float() @ b.float() + bias, rtol=1e-2, atol=1e-2)
 
 选哪个由 vector 操作数的形状决定：选那个大到能在两个通道间均分的轴。用 `--mode left_right` 跑配套文件可以对比。
 
-## 第 2 步：环默认装不下
+## 第 2 步：环会花掉你的 vector 预算
 
-上面那个 `pl.cross_core_slot(slot_num=2)` 不是可有可无的装饰。去掉它编译就失败：
+编译器插入的那些传输并非免费。每个跨越边界的 tile 都落在一个环形缓冲里，而这块缓冲是从**消费侧**核的片上内存中划出来的 —— 这里是 UB，因为是 cube 喂给 vector 单元：
+
+| 量 | 值 |
+| -- | -- |
+| 跨越边界的 tile | `[128, 128]` FP32 = 64 KB |
+| 默认环深 | 2 槽 |
+| 环的大小 | 2 × 64 KB = **128 KB** |
+| vector 预算 | **184 KB** |
+
+环是一个整 tile 的队列，所以它的大小随跨越的 tile 而变，与工作量无关。默认的 2 是仍能双缓冲的最浅深度：cube 填一个槽的同时，vector 抽干另一个。
+
+`pl.cross_core_slot(slot_num=N)` 用来重新调整它。更深的环换来更多重叠 —— 生产者在阻塞前能跑得更靠前 —— 所以当两个单元负载不均衡时可以调高它。但预算很紧：在这个 kernel 上 `slot_num=4` 就已经分配不下了。
+
+```python
+with pl.at(
+    level=pl.Level.CORE_GROUP,
+    optimizations=[pl.split(pl.SplitMode.UP_DOWN), pl.cross_core_slot(slot_num=4)],
+    name_hint="mixed",
+):
+```
 
 ```text
-Vec buffer usage (557056 bytes) exceeds platform limit (188416 bytes). The first 524288
+Vec buffer usage (294912 bytes) exceeds platform limit (188416 bytes). The first 262144
 bytes of that space are reserved by system.reserve_buffer, so tiles are allocated above
 them — this is the cross-core pipe ring. Lower its depth with
 optimizations=[pl.cross_core_slot(slot_num=N)] on the enclosing pl.at(...), or shrink the
 tile that crosses the cube/vector boundary
 ```
 
-背后的算术：
-
-| 量 | 值 |
-| -- | -- |
-| 跨越边界的 tile | `[128, 128]` FP32 = 64 KB |
-| 默认环深 | 8 槽 |
-| 环的大小 | 8 × 64 KB = **512 KB** |
-| vector 预算 | **184 KB** |
-
-环是一个整 tile 的队列，所以它的大小随跨越的 tile 而变，与工作量无关。两个杠杆：缩小 tile，或缩短环。`slot_num=2` 得到 128 KB，装得下。
-
-更深的环换来更多重叠 —— 生产者在阻塞前能跑得更靠前。所以这是一个真实的权衡，不是形式：**在装得下的前提下选最大的深度**。
+真遇到时有两个杠杆：缩小 tile，或缩短环。**在装得下的前提下选最大的深度**。
 
 ## 第 3 步：编译器插进去了什么
 
@@ -118,7 +126,7 @@ tile that crosses the cube/vector boundary
 
 | 症状 | 可能原因 | 修复 |
 | ---- | -------- | ---- |
-| **`Vec buffer usage ... exceeds platform limit`** | 8 槽的默认环装不下 | `pl.cross_core_slot(slot_num=N)`，或缩小跨越的 tile |
+| **`Vec buffer usage ... exceeds platform limit`** | 环加上 tile 超出片上预算 | 调低 `pl.cross_core_slot(slot_num=N)`，或缩小跨越的 tile |
 | **`pl.split` 没带来加速** | 一侧占主导，对半分无从重叠 | 检查这份工作是否真的是 cube 接 vector |
 | **生产者跑一阵后卡住** | 弹出的槽从未 `tfree` | 让每次 pop 都配一次 `tfree` |
 | **作用域上的 split 被拒** | 区域体混合了 split 与普通全宽 vector 算子 | 改用显式的 `pl.split_aiv` 区域形式 |

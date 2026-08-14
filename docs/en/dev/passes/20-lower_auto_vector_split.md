@@ -236,8 +236,8 @@ assembles half the tile in UB and `pl.aic_gather` hands the reassembled tile to 
 cube.
 
 ```python
-with pl.at(level=pl.Level.CORE_GROUP, name_hint="sparse_kv", allow_early_resolve=True,
-           optimizations=[pl.cross_core_slot(slot_num=2)]):     # see the ring note below
+with pl.at(level=pl.Level.CORE_GROUP, name_hint="sparse_kv",
+           allow_early_resolve=True):                           # see the ring note below
     for aiv in pl.split_aiv(2, mode=pl.SplitMode.UP_DOWN):
         ub = pl.full([64, 512], dtype=pl.BF16, value=0.0)       # per-lane HALF extent
         for k in pl.range(64):
@@ -254,12 +254,13 @@ Two authoring rules make this work:
   own. The gather is admitted on its lane-derived `src_offset`, and the guard proves
   *intent*, not *extent* — so a full-extent accumulator would be gathered back to
   `2 x FULL` and mismatch downstream.
-- **Size the cross-core ring.** The V2C ring reserves `slot_size x slot_num` bytes
+- **Watch the cross-core ring.** The V2C ring reserves `slot_size x slot_num` bytes
   of the consuming core's memory (L1 for V2C, UB for C2V), where `slot_size` is the
   **full** tile the consumer pops (`128 x 512 x 2 = 131072` here) and `slot_num`
-  defaults to **8** — 1 MB of a 512 KB L1. `pl.cross_core_slot(slot_num=N)` lowers
-  it; a kernel pushing once per invocation needs no more than 2. Omit it and
-  `AllocateMemoryAddr` reports the overflow.
+  defaults to **2** — 256 KB of a 512 KB L1, which a kernel pushing once per
+  invocation does not need to exceed. `pl.cross_core_slot(slot_num=N)` retunes it
+  in either direction; grow it too far and `AllocateMemoryAddr` reports the
+  overflow.
 
 `pl.aiv_shard` is **not** an alternative to the half-extent `pl.full` here: it is
 the C→V transfer and needs an `Acc` operand, so it cannot shard a value the

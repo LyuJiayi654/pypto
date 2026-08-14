@@ -506,7 +506,7 @@ for (x,) in pl.while_(init_values=(x_init,)):
 | 条目 | 适用形式 | 作用 |
 | ---- | -------- | ---- |
 | `pl.split(MODE)` | 两种均适用 | 给内层 InCore 设置 `split_` 字段（跨核数据搬运提示，由 `ExpandMixedKernel` / `MemoryReuse` 消费）。with-form 会在原 call 外多包一层 `InCoreScopeStmt` 来承载该字段。 |
-| `pl.cross_core_slot(slot_num=N)` | 两种均适用 | 给内层 InCore 设置 `slot_num` 属性——自动跨核 pipe 的槽位数（环深），由 `ExpandMixedKernel` 消费。它只决定数据通道大小，**不**划分计算，因此可与 `pl.split_aiv` 区域共存（而 `pl.split(...)` 不能）。省略时沿用 PTOAS 默认值（单向 8，双向每方向 4）。 |
+| `pl.cross_core_slot(slot_num=N)` | 两种均适用 | 给内层 InCore 设置 `slot_num` 属性——自动跨核 pipe 的槽位数（环深），由 `ExpandMixedKernel` 消费。它只决定数据通道大小，**不**划分计算，因此可与 `pl.split_aiv` 区域共存（而 `pl.split(...)` 不能）。省略时沿用默认深度：每个活跃方向 2 个槽位。 |
 
 > `pl.split(MODE, slot_num=N)` 是该槽位数的已废弃别名，会发出警告——参见
 > [ExpandMixedKernel](../passes/21-expand_mixed_kernel.md#覆盖槽位数slot_num)。

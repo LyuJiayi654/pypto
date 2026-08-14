@@ -67,7 +67,8 @@ with pl.at(level=pl.Level.CORE_GROUP,
     ...
 ```
 
-省略 `cross_core_slot` 就保持默认环深度：单方向活跃时 8 个 slot，双方向都活跃时每方向 4 个。
+省略 `cross_core_slot` 就保持默认环深度：每个活跃方向 2 个 slot——刚好够对这次交接做双缓冲，
+同时给 tile 本身留出片上空间。若希望生产侧核能跑得更超前，再调高它。
 
 ### SPMD
 

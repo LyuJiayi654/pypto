@@ -365,7 +365,7 @@ def test_v2c_boundary_uses_nz_layout_on_a2a3():
             out_0: pl.Out[pl.Tensor[[16, 64], pl.FP32]],
         ):
             main_incore_0_v2c_slot_buffer = pl.reserve_buffer(
-                name="main_incore_0_v2c_slot_buffer", size=16384, base=-1
+                name="main_incore_0_v2c_slot_buffer", size=8192, base=-1
             )
             main_incore_0_c2v_slot_buffer_import = pl.import_peer_buffer(
                 name="main_incore_0_c2v_slot_buffer", peer_func="main_incore_0_aiv"
@@ -375,6 +375,7 @@ def test_v2c_boundary_uses_nz_layout_on_a2a3():
                 main_incore_0_v2c_slot_buffer,
                 dir_mask=3,
                 slot_size=4096,
+                slot_num=2,
             )
             x_left_mat: pl.Tile[[16, 128], pl.BF16, pl.MemorySpace.Mat] = pl.tpop_from_aiv(split=0)
             x_left: pl.Tile[[16, 128], pl.BF16, pl.MemorySpace.Left] = pl.move(
@@ -402,13 +403,14 @@ def test_v2c_boundary_uses_nz_layout_on_a2a3():
                 name="main_incore_0_v2c_slot_buffer", peer_func="main_incore_0_aic"
             )
             main_incore_0_c2v_slot_buffer = pl.reserve_buffer(
-                name="main_incore_0_c2v_slot_buffer", size=16384, base=-1
+                name="main_incore_0_c2v_slot_buffer", size=8192, base=-1
             )
             pl.aiv_initialize_pipe(
                 main_incore_0_c2v_slot_buffer,
                 main_incore_0_v2c_slot_buffer_import,
                 dir_mask=3,
                 slot_size=4096,
+                slot_num=2,
             )
             x_tile: pl.Tile[[16, 128], pl.BF16] = pl.load(x, [0, 0], [16, 128])
             pl.tpush_to_aic(x_tile, split=0)
@@ -481,6 +483,7 @@ def test_c2v_boundary_preserves_vec_pop_layout_on_a2a3():
                 pl.const(0, pl.INT32),
                 dir_mask=1,
                 slot_size=4096,
+                slot_num=2,
             )
             x_mat: pl.Tile[[16, 128], pl.BF16, pl.MemorySpace.Mat] = pl.load(
                 x, [0, 0], [16, 128], target_memory=pl.MemorySpace.Mat
@@ -501,13 +504,14 @@ def test_c2v_boundary_preserves_vec_pop_layout_on_a2a3():
             out_0: pl.Out[pl.Tensor[[16, 64], pl.FP32]],
         ) -> pl.Tensor[[16, 64], pl.FP32]:
             main_incore_0_c2v_slot_buffer = pl.reserve_buffer(
-                name="main_incore_0_c2v_slot_buffer", size=32768, base=-1
+                name="main_incore_0_c2v_slot_buffer", size=8192, base=-1
             )
             pl.aiv_initialize_pipe(
                 main_incore_0_c2v_slot_buffer,
                 pl.const(0, pl.INT32),
                 dir_mask=1,
                 slot_size=4096,
+                slot_num=2,
             )
             z_vec: pl.Tile[[16, 64], pl.FP32, pl.MemorySpace.Vec] = pl.tpop_from_aic(split=0)
             out_0_store: pl.Tensor[[16, 64], pl.FP32] = pl.store(z_vec, [0, 0], out_0)
@@ -581,6 +585,7 @@ def test_gm_mediated_cross_lane_store_load_gets_handshake_on_a2a3():
                 pl.const(0, pl.INT32),
                 dir_mask=1,
                 slot_size=4096,
+                slot_num=2,
             )
             x_mat: pl.Tile[[16, 128], pl.BF16, pl.MemorySpace.Mat] = pl.load(
                 x, [0, 0], [16, 128], target_memory=pl.MemorySpace.Mat
@@ -605,12 +610,13 @@ def test_gm_mediated_cross_lane_store_load_gets_handshake_on_a2a3():
             scratch: pl.Out[pl.Tensor[[16, 64], pl.FP32]],
             out: pl.Out[pl.Tensor[[16, 64], pl.FP32]],
         ) -> pl.Tensor[[16, 64], pl.FP32]:
-            gm_relay_c2v_slot_buffer = pl.reserve_buffer(name="gm_relay_c2v_slot_buffer", size=32768, base=-1)
+            gm_relay_c2v_slot_buffer = pl.reserve_buffer(name="gm_relay_c2v_slot_buffer", size=8192, base=-1)
             pl.aiv_initialize_pipe(
                 gm_relay_c2v_slot_buffer,
                 pl.const(0, pl.INT32),
                 dir_mask=1,
                 slot_size=4096,
+                slot_num=2,
             )
             sync_tile: pl.Tile[[16, 64], pl.FP32, pl.MemorySpace.Vec] = pl.tpop_from_aic(split=0)
             pl.tfree_to_aic(sync_tile)
@@ -879,7 +885,7 @@ def test_split_slot_num_override_sizes_c2v_ring_on_a2a3():
     attr) overrides the hardcoded ring depth on the automatic cube->vector pipe.
 
     Mirrors ``test_c2v_boundary_preserves_vec_pop_layout_on_a2a3`` but with
-    ``slot_num=16`` instead of the default 8: the reserved buffer grows to
+    ``slot_num=16`` instead of the default 2: the reserved buffer grows to
     ``slot_size * 16`` (65536) and both ``initialize_pipe`` calls carry an
     explicit ``slot_num=16`` attribute.
     """

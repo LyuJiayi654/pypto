@@ -112,7 +112,7 @@ Ascend910B（a2a3）——跨核传输经过 GM → Mat，Mat 仅支持 NZ 布�
 - `dir_mask`：`C2V=1`、`V2C=2`、双向=`3`
 - `id`：自动生成 setup 时省略，因此 PTOAS 使用默认 frontend pipe id `0`
 - `slot_size`：所有方向中 tile 字节大小的最大值（`shape * dtype bits / 8`）
-- `slot_num`：环形缓冲深度——默认单向为 `8`，双向时每个方向为 `4`；可按 scope 覆盖（见下文）
+- `slot_num`：环形缓冲深度——每个方向默认均为 `2`，且始终显式发射；可按 scope 覆盖（见下文）
 - `buffer_size`：`slot_num * slot_size`
 - buffer 名称：`<func>_c2v_slot_buffer` / `<func>_v2c_slot_buffer`
 - reserve-buffer 的 `base`：插入时统一使用 `AUTO`，随后由 `AllocateMemoryAddr` 解析成显式地址
@@ -121,11 +121,12 @@ Ascend910B（a2a3）——跨核传输经过 GM → Mat，Mat 仅支持 NZ 布�
 
 ### 覆盖槽位数（`slot_num`）
 
-默认槽位数（8 / 4）可以通过 `pl.cross_core_slot(slot_num=N)` 优化条目按 scope 调整：
+默认槽位数（`cross_core_pipe::kDefaultAutoPipeSlotNum` = 2）可以通过
+`pl.cross_core_slot(slot_num=N)` 优化条目按 scope 调整：
 
 ```python
-# 收缩自动插入的环以腾出 buffer 空间给更大的 vector tile
-# （例如让 vec tile 突破默认 8 槽的上限）。
+# 加深自动插入的环，让 cube 能比 vector 核跑得更超前，
+# 代价是消费侧的 buffer 空间。
 with pl.spmd(4, optimizations=[pl.cross_core_slot(slot_num=4)]):
     ...
 
@@ -137,9 +138,11 @@ with pl.at(level=pl.Level.CORE_GROUP,
 ```
 
 该值作为 `slot_num` scope 属性记录，由 `OutlineIncoreScopes` 传播到被 outline
-函数的 `slot_num` 属性，并在此 Pass 读取。设置后它同时决定保留 buffer 的大小
+函数的 `slot_num` 属性，并在此 Pass 读取。它同时决定保留 buffer 的大小
 （`slot_size * slot_num`）与发射的 `initialize_pipe` 的 `slot_num` 属性，使 PTOAS
-与自动保留的 buffer 保持一致。省略该条目时沿用 PTOAS 推导的默认值。`slot_num`
+与自动保留的 buffer 保持一致。无论 scope 是否覆盖该值，自动 setup **始终**发射该属性：
+缺少该子句时 PTOAS 会按 `dir_mask` 自行推导深度（单向 8、双向 4），从而越过按更浅
+的环预留的 buffer。只有手写的 `pl.system.{aic,aiv}_initialize_pipe` 仍会走到该回退路径。`slot_num`
 必须为正数，且与拆分**正交**——它只决定数据通道的大小，不划分计算。它对 scope 实际
 使用的方向都生效（cube->vector、vector->cube 或双向），并适用于任何驱动 pipe 的
 scope：完全没有 split 的内核同样会驱动一条（a2a3 上通过双 AIV 派发——见下文）。

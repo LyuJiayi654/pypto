@@ -45,7 +45,7 @@ def mixed(
 ):
     with pl.at(
         level=pl.Level.CORE_GROUP,
-        optimizations=[pl.split(pl.SplitMode.UP_DOWN), pl.cross_core_slot(slot_num=2)],
+        optimizations=[pl.split(pl.SplitMode.UP_DOWN)],
         name_hint="mixed",
     ):
         acc = pl.matmul(a, b, out_dtype=pl.FP32)                 # cube (AIC)
@@ -78,34 +78,45 @@ Which one to pick follows from the vector operands' shape: halve the axis that i
 enough to divide across two lanes evenly. Run the companion file with `--mode left_right`
 to compare.
 
-## Step 2: the ring will not fit by default
+## Step 2: the ring spends your vector budget
 
-That `pl.cross_core_slot(slot_num=2)` above is not optional decoration. Leave it out and
-compilation fails:
+The transfers the compiler inserted are not free. Every tile crossing the boundary lands in
+a ring buffer carved out of the **consuming** core's on-chip memory — UB here, since the
+cube feeds the vector units:
+
+| Quantity | Value |
+| -------- | ----- |
+| Tile crossing the boundary | `[128, 128]` FP32 = 64 KB |
+| Default ring depth | 2 slots |
+| Ring size | 2 × 64 KB = **128 KB** |
+| Vector budget | **184 KB** |
+
+The ring is a queue of whole tiles, so its size scales with the tile that crosses, not with
+the work. The default of 2 is the shallowest depth that still double-buffers: the cube can
+fill one slot while the vector drains the other.
+
+`pl.cross_core_slot(slot_num=N)` retunes it. Deeper rings buy more overlap — the producer
+runs further ahead before it blocks — so raise it when the two units are poorly balanced.
+But the budget is tight: at `slot_num=4` this kernel already fails to allocate.
+
+```python
+with pl.at(
+    level=pl.Level.CORE_GROUP,
+    optimizations=[pl.split(pl.SplitMode.UP_DOWN), pl.cross_core_slot(slot_num=4)],
+    name_hint="mixed",
+):
+```
 
 ```text
-Vec buffer usage (557056 bytes) exceeds platform limit (188416 bytes). The first 524288
+Vec buffer usage (294912 bytes) exceeds platform limit (188416 bytes). The first 262144
 bytes of that space are reserved by system.reserve_buffer, so tiles are allocated above
 them — this is the cross-core pipe ring. Lower its depth with
 optimizations=[pl.cross_core_slot(slot_num=N)] on the enclosing pl.at(...), or shrink the
 tile that crosses the cube/vector boundary
 ```
 
-The arithmetic behind it:
-
-| Quantity | Value |
-| -------- | ----- |
-| Tile crossing the boundary | `[128, 128]` FP32 = 64 KB |
-| Default ring depth | 8 slots |
-| Ring size | 8 × 64 KB = **512 KB** |
-| Vector budget | **184 KB** |
-
-The ring is a queue of whole tiles, so its size scales with the tile that crosses, not with
-the work. Two levers: shrink the tile, or shorten the ring. `slot_num=2` gives 128 KB and
-fits.
-
-Deeper rings buy more overlap — the producer can run further ahead before it blocks. So
-this is a real trade, not a formality: pick the largest depth that fits.
+Two levers when that happens: shrink the tile, or shorten the ring. Pick the largest depth
+that fits.
 
 ## Step 3: what the compiler inserted
 
@@ -148,7 +159,7 @@ for what the pass does, [ExpandMixedKernel](../../dev/passes/21-expand_mixed_ker
 
 | Symptom | Likely cause | Fix |
 | ------- | ------------ | --- |
-| **`Vec buffer usage ... exceeds platform limit`** | The 8-slot default ring does not fit | `pl.cross_core_slot(slot_num=N)`, or shrink the crossing tile |
+| **`Vec buffer usage ... exceeds platform limit`** | The ring plus the tiles overrun the on-chip budget | Lower `pl.cross_core_slot(slot_num=N)`, or shrink the crossing tile |
 | **No speedup from `pl.split`** | One side dominates, so halving cannot overlap anything | Check the work is genuinely cube-then-vector |
 | **The producer stalls after a while** | A popped slot was never `tfree`d | Match every pop with a `tfree` |
 | **Split rejected on a scope** | The body mixes split and plain full-width vector ops | Use the explicit `pl.split_aiv` region form |

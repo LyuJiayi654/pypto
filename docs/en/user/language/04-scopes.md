@@ -79,8 +79,9 @@ with pl.at(level=pl.Level.CORE_GROUP,
     ...
 ```
 
-Omitting `cross_core_slot` keeps the default ring depth: 8 slots when one direction is
-active, 4 per direction when both are.
+Omitting `cross_core_slot` keeps the default ring depth of 2 slots per active direction —
+enough to double-buffer the handoff while leaving on-chip room for the tiles themselves.
+Raise it when the producing core should be able to run further ahead.
 
 ### SPMD
 

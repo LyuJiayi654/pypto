@@ -458,7 +458,11 @@ class TestCrossCoreTpushTpopCodegen:
         )
 
     def test_slot_num_omitted_by_default(self):
-        """Without explicit knobs, no slot_num/local_slot_num attribute is emitted (PTOAS default)."""
+        """A hand-written init pipe without the knobs emits no slot_num/local_slot_num.
+
+        Only hand-authored setup reaches PTOAS's own dir_mask-derived depth: pipes built by
+        ExpandMixedKernel always carry an explicit slot_num.
+        """
         codes = self._compile_and_generate(CrossCoreTpushTpopProgram)
         assert "slot_num" not in codes["vector_producer"], "Default path must not emit slot_num"
         assert "slot_num" not in codes["cube_consumer"], "Default path must not emit slot_num"
@@ -1641,8 +1645,10 @@ class TestExpandMixedKernelCodegen:
         aic_body = _extract_func_section(codes["main_incore_0_aic"], "main_incore_0_aic")
         aiv_body = _extract_func_section(codes["main_incore_0_aiv"], "main_incore_0_aiv")
 
-        assert "pto.aic_initialize_pipe {dir_mask = 3, slot_size = 4096}" in aic_body
-        assert "pto.aiv_initialize_pipe {dir_mask = 3, slot_size = 4096}" in aiv_body
+        # Automatic setup always pins the ring depth explicitly (default 2), so PTOAS cannot
+        # fall back to its own dir_mask-derived depth and overrun the reserved buffer.
+        assert "pto.aic_initialize_pipe {dir_mask = 3, slot_size = 4096, slot_num = 2}" in aic_body
+        assert "pto.aiv_initialize_pipe {dir_mask = 3, slot_size = 4096, slot_num = 2}" in aiv_body
         assert "{id =" not in aic_body
         assert "{id =" not in aiv_body
         assert "pto.tpush_to_aiv" in aic_body and "{split = 0}" in aic_body
